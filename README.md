@@ -4,7 +4,7 @@ Boilerplate repository for small scale code language model training.
 
 ## Goals
 
-- [ ] Pre-train a 400M causal GPT model at 500,000 tokens/s on 8xH800 (~40B tokens per day).
+- [ ] Pre-train a 500M causal GPT model at 500,000 tokens/s on 8xH800 (~40B tokens per day).
 
 ## Environment
 
@@ -38,27 +38,25 @@ We manually configure the following additional dependencies.
 
 ### Hugging Face
 
-```
+```bash
 pip install accelerate transformers safetensors datasets tokenizers
 ```
 
 ### TokenGeeX
 
-```
+```bash
 pip install tokengeex
 ```
 
 ### XFormers
 
-```
-pip install ninja
+```bash
 pip install -v -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers
 ```
 
 For users in China, a copy of the source code of XFormers is provided in the `vendor` directory.
 
-```
-pip install ninja
+```bash
 pip install vendor/xformers-0.0.26.post1.tar
 ```
 

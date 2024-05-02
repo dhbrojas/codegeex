@@ -1,4 +1,5 @@
 import math
+import sys
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -6,6 +7,10 @@ import torch
 import torch.nn as nn
 from flash_attn import flash_attn_qkvpacked_func
 from xformers.ops import SwiGLU
+
+sys.path.append("..")
+
+from utils.rope import ApplyRoPE
 
 RoPECache = Tuple[torch.Tensor, torch.Tensor]
 
@@ -18,7 +23,7 @@ class CodeGeeXNanoConfig:
     # Size of the intermediate layer in the feedforward network
     intermediate_size: int = 4096
     # Number of layers in the transformer encoder
-    num_layers: int = 20
+    num_layers: int = 24
     # Size of the vocabulary
     vocab_size: int = 32768
     # Number of attention heads in the multi-head attention mechanism
@@ -92,7 +97,7 @@ class CodeGeeXNanoModel(nn.Module):
         cos, sin = cos[:sequence_length], sin[:sequence_length]
 
         for layer in self.transformer.layers:
-            x = layer(x)
+            x = layer(x, self.rope)
 
         x = self.lm_head(x)
         batch_size, sequence_length, vocab_size = x.size()
@@ -233,6 +238,12 @@ class CodeGeeXNanoMultiHeadCausalFlashAttention(nn.Module):
         )
 
         cos, sin = rope
+
+        q, k, v = x.unbind(dim=2)
+        q: torch.Tensor = ApplyRoPE.apply(q, cos, sin)  # type: ignore
+        k: torch.Tensor = ApplyRoPE.apply(k, cos, sin)  # type: ignore
+
+        x = torch.stack((q, k, v), dim=2)
 
         x = self.scaled_dot_product_attention(x)
         batch_size, sequence_length, num_heads, head_size = x.size()
