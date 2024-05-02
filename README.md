@@ -2,6 +2,10 @@
 
 Boilerplate repository for small scale code language model training.
 
+## Goals
+
+- [ ] Pre-train a 400M causal GPT model at 500,000 tokens/s on 8xH800 (~40B tokens per day).
+
 ## Environment
 
 You are expected to use the official NVIDIA PyTorch image.
@@ -56,4 +60,17 @@ For users in China, a copy of the source code of XFormers is provided in the `ve
 ```
 pip install ninja
 pip install vendor/xformers-0.0.26.post1.tar
+```
+
+## Fused RMS Norm & RoPE
+
+The Flash Attention repository provides optimised implementations of RMSNorm and RoPE. They're not available on PyPI so we install them manually. We use Flash Attention v2.5.8 for this.
+
+```bash
+# Untar the archive.
+mkdir -p build
+tar -xvf ./vendor/flash-attention-2.5.8.tar -C ./build
+# Build the extensions.
+cd ./csrc/rotary && pip install .
+cd ../layer_norm && pip install .
 ```
