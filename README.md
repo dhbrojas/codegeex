@@ -70,7 +70,7 @@ The Flash Attention repository provides optimised implementations of RMSNorm and
 # Untar the archive.
 mkdir -p build
 tar -xvf ./vendor/flash-attention-2.5.8.tar -C ./build
-# Build the extensions.
-cd ./csrc/rotary && pip install .
-cd ../layer_norm && pip install .
+# Install the packages.
+cd ./build/flash-attention-2.5.8/csrc/rotary && pip install . && cd -
+cd ./build/flash-attention-2.5.8/csrc/layer_norm && pip install . && cd -
 ```
