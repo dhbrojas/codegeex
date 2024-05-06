@@ -38,16 +38,10 @@ We manually configure the following additional dependencies.
 
 > Note: For users in China, make sure to run `pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple`.
 
-### Hugging Face
+### Hugging Face, TikToken, TokenGeeX & WanDB
 
 ```bash
-pip install accelerate transformers safetensors datasets tokenizers
-```
-
-### TokenGeeX
-
-```bash
-pip install tokengeex
+pip install accelerate transformers safetensors datasets tokenizers tokengeex tiktoken wandb
 ```
 
 ### XFormers

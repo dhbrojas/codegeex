@@ -3,38 +3,22 @@ import time
 import numpy as np
 import torch
 import torch.distributed as dist
+import wandb
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
 from models.codegeexnano import CodeGeeXNanoConfig, CodeGeeXNanoForCausalLM
+from utils.datasets import BinaryFileDataset
 from utils.info import print_model_information
 
-STEPS = 16
+STEPS = 5000
 GRADIENT_ACCUMULATION_STEPS = 64
 MICRO_BATCH_SIZE = 10
 MAX_LR = 1e-4
 MIN_LR = 1e-6
-
-
-class FakeDataset(Dataset):
-    def __init__(self, vocab_size, sequence_length, num_elements):
-        self.vocab_size = vocab_size
-        self.sequence_length = sequence_length
-        self.num_elements = num_elements
-
-    def __len__(self):
-        return self.num_elements
-
-    def __getitem__(self, index):
-        if index >= self.num_elements:
-            raise IndexError
-        return (
-            torch.randint(0, self.vocab_size, (self.sequence_length,)),
-            torch.randint(0, self.vocab_size, (self.sequence_length,)),
-        )
 
 
 def print_rank_0(*args, **kwargs):
@@ -50,6 +34,19 @@ def run():
     config = CodeGeeXNanoConfig()
     model = CodeGeeXNanoForCausalLM(config).cuda(device)
     model = torch.compile(model, backend="inductor")
+
+    if rank == 0:
+        wandb.init(
+            mode="disabled",
+            project="codegeexnano-ddp-benchmark",
+            config={
+                "STEPS": STEPS,
+                "GRADIENT_ACCUMULATION_STEPS": GRADIENT_ACCUMULATION_STEPS,
+                "MICRO_BATCH_SIZE": MICRO_BATCH_SIZE,
+                "MAX_LR": MAX_LR,
+                "MIN_LR": MIN_LR,
+            },
+        )
 
     # Fake forward pass to compile the model
     print_rank_0("Compiling model...")
@@ -77,21 +74,6 @@ def run():
 
     optimizer = AdamW(model.parameters(), lr=MAX_LR)
     scheduler = CosineAnnealingLR(optimizer, STEPS, eta_min=MIN_LR)
-
-    dataset = FakeDataset(
-        config.vocab_size,
-        config.max_position_embeddings,
-        STEPS * GRADIENT_ACCUMULATION_STEPS * MICRO_BATCH_SIZE,
-    )
-    sampler = DistributedSampler(dataset, num_replicas=dist.get_world_size(), rank=rank)
-    dataloader = DataLoader(
-        dataset,
-        batch_size=MICRO_BATCH_SIZE,
-        num_workers=0,
-        pin_memory=False,
-        sampler=sampler,
-    )
-
     bench_start = time.perf_counter()
     step_start = time.perf_counter()
     forward_times = np.zeros(STEPS * GRADIENT_ACCUMULATION_STEPS)
@@ -101,33 +83,83 @@ def run():
     tokens_processed = 0
     current_step = 0
     local_grad_acc = GRADIENT_ACCUMULATION_STEPS // dist.get_world_size()
+    accumulated_loss = 0
 
-    for i, (input, target) in enumerate(dataloader):
-        input, target = input.cuda(device), target.cuda(device)
-        forward_start = time.perf_counter()
-        with torch.cuda.amp.autocast(dtype=torch.bfloat16):
-            loss = model(input, target)
-        forward_times[i] = time.perf_counter() - forward_start
+    while current_step < STEPS:
+        dataset = BinaryFileDataset(
+            "/workspace/data/train.bin", config.max_position_embeddings
+        )
+        sampler = DistributedSampler(
+            dataset, num_replicas=dist.get_world_size(), rank=rank
+        )
 
-        backward_start = time.perf_counter()
-        loss.backward()
-        backward_times[i] = time.perf_counter() - backward_start
-        tokens_processed += MICRO_BATCH_SIZE * config.max_position_embeddings
-        total_tokens_processed = tokens_processed * dist.get_world_size()
-
-        if (i + 1) % local_grad_acc == 0:
-            optimizer.step()
-            optimizer.zero_grad()
-            scheduler.step()
-            step_times[current_step] = time.perf_counter() - step_start
-            step_start = time.perf_counter()
-            tokens_per_second = total_tokens_processed / (
-                time.perf_counter() - bench_start
+        for i, (input, target) in enumerate(
+            DataLoader(
+                dataset,
+                batch_size=MICRO_BATCH_SIZE,
+                num_workers=0,
+                pin_memory=False,
+                sampler=sampler,
             )
-            print_rank_0(
-                f"[STEP] i={current_step} duration={step_times[current_step]:.2f}s tokens={total_tokens_processed:,} throughput={tokens_per_second:,.0f}-tokens/s"
-            )
-            current_step += 1
+        ):
+            batch_size, sequence_length = input.size()
+            assert (
+                (batch_size, sequence_length)
+                == (
+                    MICRO_BATCH_SIZE,
+                    config.max_position_embeddings,
+                )
+            ), f"Expected {(MICRO_BATCH_SIZE, config.max_position_embeddings)}, got {(batch_size, sequence_length)}"
+            input, target = input.cuda(device), target.cuda(device)
+            forward_start = time.perf_counter()
+            with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                loss = model(input, target)
+            forward_times[i] = time.perf_counter() - forward_start
+
+            backward_start = time.perf_counter()
+            loss.backward()
+            backward_times[i] = time.perf_counter() - backward_start
+            tokens_processed += MICRO_BATCH_SIZE * config.max_position_embeddings
+            total_tokens_processed = tokens_processed * dist.get_world_size()
+            accumulated_loss += loss.item()
+
+            if rank == 0:
+                wandb.log({"batch/loss": loss.item()})
+
+            if (i + 1) % local_grad_acc == 0:
+                optimizer.step()
+                optimizer.zero_grad()
+                scheduler.step()
+
+                gathered_accumulated_loss = torch.tensor(accumulated_loss).to(device)
+                dist.all_reduce(gathered_accumulated_loss, op=dist.ReduceOp.SUM)
+                mean_step_loss = (
+                    gathered_accumulated_loss.item()
+                    / dist.get_world_size()
+                    / local_grad_acc
+                )
+                accumulated_loss = 0
+
+                step_times[current_step] = time.perf_counter() - step_start
+                step_start = time.perf_counter()
+                tokens_per_second = (
+                    MICRO_BATCH_SIZE
+                    * GRADIENT_ACCUMULATION_STEPS
+                    * config.max_position_embeddings
+                ) / (step_times[current_step])
+                print_rank_0(
+                    f"[STEP] i={current_step} loss={mean_step_loss:.2f} duration={step_times[current_step]:.2f}s tokens={total_tokens_processed:,} throughput={tokens_per_second:,.0f}-tokens/s"
+                )
+                current_step += 1
+
+                if rank == 0:
+                    wandb.log(
+                        {
+                            "step": current_step,
+                            "step/loss": mean_step_loss,
+                            "throughput/tokens_per_second": tokens_per_second,
+                        }
+                    )
 
     if rank == 0:
         print(f"Average forward pass time: {forward_times.mean() * 1000:.2f}ms")
