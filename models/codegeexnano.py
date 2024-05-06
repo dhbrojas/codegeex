@@ -1,6 +1,7 @@
 import math
 import sys
 from dataclasses import dataclass
+from functools import partial
 from typing import Optional, Tuple
 
 import torch
@@ -33,7 +34,7 @@ class CodeGeeXNanoConfig:
     # Epsilon value for layer normalization
     norm_eps: float = 1e-5
     # RoPE base value
-    rope_base: int = 10000
+    rope_theta: int = 10000
     # RoPE scaling ratio
     rope_scaling_ratio: int = 1
     # The percentage of head dimensions used for RoPE
@@ -53,6 +54,28 @@ class CodeGeeXNanoConfig:
         return self.hidden_size // self.num_attention_heads
 
 
+class CodeGeeXNanoForCausalLM(nn.Module):
+    def __init__(self, config: CodeGeeXNanoConfig):
+        super().__init__()
+        self.config = config
+        self.model = CodeGeeXNanoModel(config)
+
+    def init_weights(self):
+        self.model.apply(partial(self.model.init_weights, depth=self.config.num_layers))
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor):
+        outputs = self.model(inputs)
+        batch_size, sequence_length, vocab_size = outputs.size()
+
+        outputs = outputs.view(-1, vocab_size).float()
+        targets = targets.view(-1)
+
+        return nn.functional.cross_entropy(
+            outputs,
+            targets,
+        )
+
+
 class CodeGeeXNanoModel(nn.Module):
     """
     CodeGeeXNano is a decoder-only transformer model with RoPE, multi-head
@@ -70,7 +93,6 @@ class CodeGeeXNanoModel(nn.Module):
                 layers=nn.ModuleList(
                     CodeGeeXNanoBlock(config) for _ in range(config.num_layers)
                 ),
-                norm=CodeGeeXNanoRMSNorm(config),
             )
         )
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
@@ -137,7 +159,7 @@ class CodeGeeXNanoModel(nn.Module):
 
     def build_rope_cache(self, device: torch.device, dtype: torch.dtype):
         theta = 1.0 / (
-            self.config.rope_base
+            self.config.rope_theta
             ** (
                 torch.arange(
                     0,
@@ -172,43 +194,6 @@ class CodeGeeXNanoModel(nn.Module):
         return cos, sin
 
 
-class CodeGeeXNanoRMSNorm(nn.Module):
-    def __init__(self, config: CodeGeeXNanoConfig):
-        super().__init__()
-        self.config = config
-        self.weight = nn.Parameter(torch.ones(config.hidden_size))
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        nn.init.ones_(self.weight)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        norm_x = torch.mean(x * x, dim=-1, keepdim=True)
-        x_normed = x * torch.rsqrt(norm_x + self.config.norm_eps)
-        return self.weight * x_normed
-
-
-class CodeGeeXNanoBlock(nn.Module):
-    def __init__(self, config: CodeGeeXNanoConfig):
-        super().__init__()
-        self.config = config
-        self.pre_norm = CodeGeeXNanoRMSNorm(config)
-        self.attention = CodeGeeXNanoMultiHeadCausalFlashAttention(config)
-        self.post_attention_norm = CodeGeeXNanoRMSNorm(config)
-        self.feedforward = CodeGeeXNanoFeedForward(config)
-
-    def forward(self, x: torch.Tensor, rope: RoPECache):
-        batch_size, sequence_length, hidden_size = x.size()
-        assert hidden_size == self.config.hidden_size
-
-        x = self.pre_norm(x)
-        x = self.attention(x, rope)
-        x = self.post_attention_norm(x)
-        x = self.feedforward(x)
-
-        return x
-
-
 class CodeGeeXNanoMultiHeadCausalFlashAttention(nn.Module):
     def __init__(self, config: CodeGeeXNanoConfig):
         super().__init__()
@@ -240,8 +225,8 @@ class CodeGeeXNanoMultiHeadCausalFlashAttention(nn.Module):
         cos, sin = rope
 
         q, k, v = x.unbind(dim=2)
-        q: torch.Tensor = ApplyRoPE.apply(q, cos, sin)  # type: ignore
-        k: torch.Tensor = ApplyRoPE.apply(k, cos, sin)  # type: ignore
+        q = ApplyRoPE.apply(q.type_as(cos), cos, sin).type_as(v)  # type: ignore
+        k = ApplyRoPE.apply(k.type_as(cos), cos, sin).type_as(v)  # type: ignore
 
         x = torch.stack((q, k, v), dim=2)
 
@@ -279,3 +264,45 @@ class CodeGeeXNanoFeedForward(nn.Module):
 
     def forward(self, x: torch.Tensor):
         return self.swiglu(x)
+
+
+class CodeGeeXNanoRMSNorm(nn.Module):
+    """Same normalization as in Google Gemma."""
+
+    def __init__(self, config: CodeGeeXNanoConfig):
+        super().__init__()
+        self.config = config
+        self.weight = nn.Parameter(torch.zeros(config.hidden_size))
+
+    def normalize(self, x: torch.Tensor) -> torch.Tensor:
+        return x * torch.rsqrt(
+            x.square().mean(dim=-1, keepdim=True) + self.config.norm_eps
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        norm = self.normalize(x.float())
+        norm = norm * (1.0 + self.weight.float())
+        return norm.type_as(x)
+
+
+class CodeGeeXNanoBlock(nn.Module):
+    def __init__(self, config: CodeGeeXNanoConfig):
+        super().__init__()
+        self.config = config
+        self.pre_norm = CodeGeeXNanoRMSNorm(config)
+        self.attention = CodeGeeXNanoMultiHeadCausalFlashAttention(config)
+        self.post_attention_norm = CodeGeeXNanoRMSNorm(config)
+        self.feedforward = CodeGeeXNanoFeedForward(config)
+
+    def forward(self, x: torch.Tensor, rope: RoPECache):
+        batch_size, sequence_length, hidden_size = x.size()
+        assert hidden_size == self.config.hidden_size
+
+        residual = x
+
+        x = self.pre_norm(x)
+        x = self.attention(x, rope) + residual
+        x = self.post_attention_norm(x)
+        x = self.feedforward(x) + residual
+
+        return x

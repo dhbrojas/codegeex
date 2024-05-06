@@ -33,6 +33,9 @@ class ApplyRoPE(torch.autograd.Function):
         x_rope = x[..., :rotary_size]
         x1_rope, x2_rope = x_rope.chunk(2, dim=-1)
 
+        assert x1_rope.device == cos.device, f"{x1_rope.device} != {cos.device}"
+        assert x1_rope.dtype == cos.dtype, f"{x1_rope.dtype} != {cos.dtype}"
+
         rotary_emb.apply_rotary(
             x1_rope,
             x2_rope,
