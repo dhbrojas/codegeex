@@ -4,7 +4,9 @@ Boilerplate repository for small scale code language model training.
 
 ## Goals
 
-- Pre-train a 500M causal GPT model at 1,000,000 tokens/s on 8xH800 (~80B tokens per day).
+- Pre-train a 500M causal GPT model at 1,000,000 tokens/s on 8xH800 (~80B tokens per day). *Currently: 800,000 tokens/s.*
+- Pre-train a 1B causal GPT model at 500,000 tokens/s on 8xH800 (~40B tokens per day). *Currently: 450,000 tokens/s.*
+- Stable training in mixed FP32, BF16, FP8 precision. *Currently: FP32 + BF16.*
 
 ## Environment
 
@@ -60,7 +62,7 @@ For users in China, a copy of the source code of XFormers is provided in the `ve
 pip install vendor/xformers-0.0.26.post1.tar
 ```
 
-## Fused RMS Norm & RoPE
+### Fused RMS Norm & RoPE
 
 The Flash Attention repository provides optimised implementations of RMSNorm and RoPE. They're not available on PyPI so we install them manually. We use Flash Attention v2.5.8 for this.
 

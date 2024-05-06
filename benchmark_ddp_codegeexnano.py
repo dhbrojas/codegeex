@@ -71,7 +71,7 @@ def run():
     if rank == 0:
         print(f"Running on {dist.get_world_size()} GPUs")
         print(
-            f"Training for {STEPS} steps, with {MICRO_BATCH_SIZE*GRADIENT_ACCUMULATION_STEPS*config.max_position_embeddings} tokens per step"
+            f"Training for {STEPS} steps, with {MICRO_BATCH_SIZE*GRADIENT_ACCUMULATION_STEPS*config.max_position_embeddings:,} tokens per step"
         )
         print_model_information(model, config)
 
