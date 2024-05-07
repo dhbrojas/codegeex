@@ -7,7 +7,7 @@ from torch.optim.lr_scheduler import LambdaLR
 
 from codegeex.config import Config
 from codegeex.lr import wsd_learning_rate_scheduler
-from codegeex.nano import CodeGeeXNanoConfig, CodeGeeXNanoForCausalLM
+from codegeex.models.nano import CodeGeeXNanoConfig, CodeGeeXNanoForCausalLM
 from codegeex.tokenizers import WrappedTokenGeeXTokenizer
 
 
