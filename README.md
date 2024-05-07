@@ -4,8 +4,8 @@ Boilerplate repository for small scale code language model training.
 
 ## Goals
 
-- Pre-train a 500M causal GPT model at 1,000,000 tokens/s on 8xH800 (~80B tokens per day). *Currently: 800,000 tokens/s.*
-- Pre-train a 1B causal GPT model at 500,000 tokens/s on 8xH800 (~40B tokens per day). *Currently: 450,000 tokens/s.*
+- Pre-train a 500M causal GPT model at 1,000,000 tokens/s on 8xH100 (~80B tokens per day). *Currently: 800,000 tokens/s.*
+- Pre-train a 1B causal GPT model at 500,000 tokens/s on 8xH100 (~40B tokens per day). *Currently: 450,000 tokens/s.*
 - Stable training in mixed FP32, BF16, FP8 precision. *Currently: FP32 + BF16.*
 
 ## Environment

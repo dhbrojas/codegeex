@@ -9,8 +9,8 @@ from tqdm import tqdm
 
 sys.path.insert(0, "../models")
 
-from models.codegeexnano import CodeGeeXNanoConfig, CodeGeeXNanoForCausalLM
-from utils.info import print_model_information
+from codegeex.info import print_model_information
+from codegeex.models.nano import CodeGeeXNanoConfig, CodeGeeXNanoForCausalLM
 
 STEPS = 2
 GRADIENT_ACCUMULATION_STEPS = 64

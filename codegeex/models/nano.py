@@ -1,5 +1,4 @@
 import math
-import sys
 from dataclasses import dataclass
 from functools import partial
 from typing import Optional, Tuple
@@ -9,9 +8,7 @@ import torch.nn as nn
 from flash_attn import flash_attn_qkvpacked_func
 from xformers.ops import SwiGLU
 
-sys.path.append("..")
-
-from utils.rope import ApplyRoPE
+from codegeex.rope import ApplyRoPE
 
 RoPECache = Tuple[torch.Tensor, torch.Tensor]
 
