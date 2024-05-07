@@ -6,13 +6,14 @@ import torch.distributed as dist
 import wandb
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
 from models.codegeexnano import CodeGeeXNanoConfig, CodeGeeXNanoForCausalLM
 from utils.datasets import BinaryFileDataset
 from utils.info import print_model_information
+from utils.lr import wsd_learning_rate_scheduler
 
 STEPS = 5000
 GRADIENT_ACCUMULATION_STEPS = 64
@@ -73,7 +74,13 @@ def run():
         print_model_information(model, config)
 
     optimizer = AdamW(model.parameters(), lr=MAX_LR)
-    scheduler = CosineAnnealingLR(optimizer, STEPS, eta_min=MIN_LR)
+    scheduler = LambdaLR(
+        optimizer,
+        lr_lambda=wsd_learning_rate_scheduler(
+            1000, 4000, MAX_LR, decay_rate=0.95, decay_step=1
+        ),
+    )
+
     bench_start = time.perf_counter()
     step_start = time.perf_counter()
     forward_times = np.zeros(STEPS * GRADIENT_ACCUMULATION_STEPS)
