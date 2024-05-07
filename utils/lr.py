@@ -15,13 +15,10 @@ def wsd_learning_rate_scheduler(W, T, eta, decay_rate=0.95, decay_step=1):
 
     def lr_lambda(current_step):
         if current_step <= W:
-            # Linear warmup
-            return current_step / W * eta
+            return (current_step / W) * eta
         elif current_step <= T:
-            # Stable learning rate
             return eta
         else:
-            # Exponential decay
             steps_into_decay = current_step - T
             decay_factor = decay_rate ** (steps_into_decay / decay_step)
             return eta * decay_factor

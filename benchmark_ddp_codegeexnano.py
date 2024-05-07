@@ -1,3 +1,4 @@
+import argparse
 import time
 
 import numpy as np
@@ -16,10 +17,10 @@ from utils.info import print_model_information
 from utils.lr import wsd_learning_rate_scheduler
 
 STEPS = 5000
-GRADIENT_ACCUMULATION_STEPS = 64
+GRADIENT_ACCUMULATION_STEPS = 24
 MICRO_BATCH_SIZE = 10
-MAX_LR = 1e-4
-MIN_LR = 1e-6
+MAX_LR = 5.3e-4
+MIN_LR = MAX_LR / 100
 
 
 def print_rank_0(*args, **kwargs):
@@ -27,7 +28,7 @@ def print_rank_0(*args, **kwargs):
         print(*args, **kwargs)
 
 
-def run():
+def run(compile: bool):
     dist.init_process_group("nccl")
     rank = dist.get_rank()
     device = rank % torch.cuda.device_count()
@@ -50,19 +51,22 @@ def run():
         )
 
     # Fake forward pass to compile the model
-    print_rank_0("Compiling model...")
-    start = time.perf_counter()
-    x = torch.randint(
-        0, config.vocab_size, (MICRO_BATCH_SIZE, config.max_position_embeddings)
-    ).cuda(device)
-    y = torch.randint(
-        0, config.vocab_size, (MICRO_BATCH_SIZE, config.max_position_embeddings)
-    ).cuda(device)
-    with torch.cuda.amp.autocast(dtype=torch.bfloat16):
-        loss = model(x, y)
-        loss.backward()
-    dist.barrier()
-    print_rank_0(f"Compiled model in {time.perf_counter() - start:.2f}s")
+    if compile:
+        print_rank_0("Compiling model...")
+        start = time.perf_counter()
+        x = torch.randint(
+            0, config.vocab_size, (MICRO_BATCH_SIZE, config.max_position_embeddings)
+        ).cuda(device)
+        y = torch.randint(
+            0, config.vocab_size, (MICRO_BATCH_SIZE, config.max_position_embeddings)
+        ).cuda(device)
+        with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+            loss = model(x, y)
+            loss.backward()
+        dist.barrier()
+        print_rank_0(f"Compiled model in {time.perf_counter() - start:.2f}s")
+    else:
+        print_rank_0("Running in eager mode, pass --compile to use torch.compile()")
 
     model = DDP(model, device_ids=[device])
 
@@ -73,11 +77,11 @@ def run():
         )
         print_model_information(model, config)
 
-    optimizer = AdamW(model.parameters(), lr=MAX_LR)
+    optimizer = AdamW(model.parameters(), lr=1)
     scheduler = LambdaLR(
         optimizer,
         lr_lambda=wsd_learning_rate_scheduler(
-            1000, 4000, MAX_LR, decay_rate=0.95, decay_step=1
+            500, 4000, MAX_LR, decay_rate=0.95, decay_step=1
         ),
     )
 
@@ -94,13 +98,14 @@ def run():
 
     while current_step < STEPS:
         dataset = BinaryFileDataset(
-            "/workspace/data/train.bin", config.max_position_embeddings
+            "/workspace/datasets/tokenized/tokengeex/exact-32k-merged/train.bin",
+            config.max_position_embeddings,
         )
         sampler = DistributedSampler(
             dataset, num_replicas=dist.get_world_size(), rank=rank
         )
 
-        for i, (input, target) in enumerate(
+        for i, (inputs, targets) in enumerate(
             DataLoader(
                 dataset,
                 batch_size=MICRO_BATCH_SIZE,
@@ -109,7 +114,7 @@ def run():
                 sampler=sampler,
             )
         ):
-            batch_size, sequence_length = input.size()
+            batch_size, sequence_length = inputs.size()
             assert (
                 (batch_size, sequence_length)
                 == (
@@ -117,12 +122,15 @@ def run():
                     config.max_position_embeddings,
                 )
             ), f"Expected {(MICRO_BATCH_SIZE, config.max_position_embeddings)}, got {(batch_size, sequence_length)}"
-            input, target = input.cuda(device), target.cuda(device)
+            inputs, targets = inputs.cuda(device), targets.cuda(device)
+
+            # Forward
             forward_start = time.perf_counter()
             with torch.cuda.amp.autocast(dtype=torch.bfloat16):
-                loss = model(input, target)
+                loss = model(inputs, targets)
             forward_times[i] = time.perf_counter() - forward_start
 
+            # Backward
             backward_start = time.perf_counter()
             loss.backward()
             backward_times[i] = time.perf_counter() - backward_start
@@ -154,9 +162,11 @@ def run():
                     * GRADIENT_ACCUMULATION_STEPS
                     * config.max_position_embeddings
                 ) / (step_times[current_step])
+
                 print_rank_0(
-                    f"[STEP] i={current_step} loss={mean_step_loss:.2f} duration={step_times[current_step]:.2f}s tokens={total_tokens_processed:,} throughput={tokens_per_second:,.0f}-tokens/s"
+                    f"[STEP] i={current_step} loss={mean_step_loss:.2f} lr={(scheduler.get_lr(), [group['lr'] for group in optimizer.param_groups])} duration={step_times[current_step]:.2f}s tokens={total_tokens_processed:,} throughput={tokens_per_second:,.0f}-tokens/s"
                 )
+
                 current_step += 1
 
                 if rank == 0:
@@ -185,4 +195,7 @@ def run():
 
 
 if __name__ == "__main__":
-    run()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--compile", action="store_true")
+    args = parser.parse_args()
+    run(args.compile)

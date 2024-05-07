@@ -15,9 +15,18 @@ def file_size_bytes(file_path):
 
 class TestBinaryFileDataset(unittest.TestCase):
     def test_read(self):
-        dataset = BinaryFileDataset("/workspace/data/test.bin", 4096)
+        dataset = BinaryFileDataset(
+            "/workspace/datasets/tokenized/tokengeex/exact-32k-merged/train.bin", 4096
+        )
 
-        assert len(dataset) == file_size_bytes("/workspace/data/test.bin") // 4 // 4096
+        assert (
+            len(dataset)
+            == file_size_bytes(
+                "/workspace/datasets/tokenized/tokengeex/exact-32k-merged/train.bin"
+            )
+            // 4
+            // 4096
+        )
 
         dataloader = DataLoader(
             dataset,
@@ -25,7 +34,7 @@ class TestBinaryFileDataset(unittest.TestCase):
             drop_last=True,
         )
 
-        tokenizer = Tokenizer.from_file("./resources/tokengeex/exact-32k-merged.json")
+        tokenizer = Tokenizer.from_file("resources/tokengeex/exact-32k-merged.json")
 
         elapsed = []
 

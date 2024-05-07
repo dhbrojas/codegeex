@@ -16,20 +16,16 @@ class BinaryFileDataset(Dataset):
     def __len__(self):
         return len(self.mmap) // self.sequence_length
 
-    def __iter__(self):
-        for i in range(0, len(self.mmap), self.sequence_length):
-            if i + self.sequence_length > len(self.mmap):
-                raise StopIteration
-            yield torch.from_numpy(self.mmap[i : i + self.sequence_length])
-
     def __getitem__(self, index):
         if index >= len(self):
             raise IndexError
+
         seq = torch.from_numpy(
             self.mmap[
                 index * self.sequence_length : (index + 1) * self.sequence_length + 1
-            ]
-        )
+            ].copy(),
+        ).long()
+
         return seq[:-1], seq[1:]
 
 
