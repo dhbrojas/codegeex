@@ -11,7 +11,7 @@ from codegeex.models.nano import CodeGeeXNanoConfig, CodeGeeXNanoForCausalLM
 from codegeex.tokenizers import WrappedTokenGeeXTokenizer
 
 
-class Emma130MConfig(Config):
+class Emma200M(Config):
     def __init__(self):
         self.steps = 10000
         self.sequence_length = 2048
@@ -26,8 +26,8 @@ class Emma130MConfig(Config):
     def model(self) -> torch.nn.Module:
         model = CodeGeeXNanoForCausalLM(
             CodeGeeXNanoConfig(
-                hidden_size=1024,
-                intermediate_size=4096,
+                hidden_size=768,
+                intermediate_size=3072,
                 max_position_embeddings=self.sequence_length,
                 num_attention_heads=16,
                 norm_eps=1e-6,
