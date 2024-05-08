@@ -16,7 +16,7 @@ class Emma200M(Config):
         self.steps = 10000
         self.sequence_length = 2048
         self.micro_batch_size = 32
-        self.gradient_accumulation_steps = 32
+        self.gradient_accumulation_steps = 30
         self.tokenizer = WrappedTokenGeeXTokenizer(
             tokenizer=Tokenizer.from_file("resources/tokengeex/exact-32k-merged.json"),
         )
@@ -26,12 +26,12 @@ class Emma200M(Config):
     def model(self) -> torch.nn.Module:
         model = CodeGeeXNanoForCausalLM(
             CodeGeeXNanoConfig(
-                hidden_size=768,
-                intermediate_size=3072,
+                hidden_size=1024,
+                intermediate_size=2560,
                 max_position_embeddings=self.sequence_length,
                 num_attention_heads=16,
                 norm_eps=1e-6,
-                num_layers=16,
+                num_layers=20,
                 vocab_size=self.padded_vocab_size,
                 rope_percentage=0.25,
                 rope_scaling_ratio=1,

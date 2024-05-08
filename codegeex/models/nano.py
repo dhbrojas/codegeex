@@ -1,4 +1,3 @@
-import math
 from dataclasses import dataclass
 from functools import partial
 from typing import Optional, Tuple
@@ -6,14 +5,14 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 from flash_attn import flash_attn_qkvpacked_func
-from xformers.ops import SwiGLU
+from xformers.ops import swiglu as xformers_swiglu
 
 from codegeex.rope import ApplyRoPE
 
 RoPECache = Tuple[torch.Tensor, torch.Tensor]
 
 
-# TODO: Add padded vocab size.
+# TODO: Add padded vocab size, keep RoPE in FP32.
 @dataclass
 class CodeGeeXNanoConfig:
     # Size of the hidden layer in the transformer encoder
@@ -36,6 +35,9 @@ class CodeGeeXNanoConfig:
     rope_scaling_ratio: int = 1
     # The percentage of head dimensions used for RoPE
     rope_percentage: float = 0.25
+    # Standard deviation of the normal distribution used for initializing the
+    # weights
+    init_std: float = 0.02
 
     def __post_init__(self):
         assert self.hidden_size % self.num_attention_heads == 0, (
@@ -58,7 +60,9 @@ class CodeGeeXNanoForCausalLM(nn.Module):
         self.model = CodeGeeXNanoModel(config)
 
     def init_weights(self):
-        self.model.apply(partial(self.model.init_weights, depth=self.config.num_layers))
+        self.model.apply(
+            partial(self.model.apply_initial_weights, depth=self.config.num_layers)
+        )
 
     def forward(self, inputs: torch.Tensor, targets: torch.Tensor):
         outputs = self.model(inputs)
@@ -84,15 +88,11 @@ class CodeGeeXNanoModel(nn.Module):
         super().__init__()
         self.config = config
         self.rope: Optional[RoPECache] = None
-        self.transformer = nn.ModuleDict(
-            dict(
-                embeddings=nn.Embedding(config.vocab_size, config.hidden_size),
-                layers=nn.ModuleList(
-                    CodeGeeXNanoBlock(config) for _ in range(config.num_layers)
-                ),
-            )
+        self.embeddings = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.layers = nn.ModuleList(
+            CodeGeeXNanoBlock(config, i) for i in range(config.num_layers)
         )
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
     def forward(self, inputs: torch.Tensor):
         batch_size, sequence_length = inputs.size()
@@ -118,41 +118,22 @@ class CodeGeeXNanoModel(nn.Module):
         for layer in self.transformer.layers:
             x = layer(x, self.rope)
 
-        x = self.lm_head(x)
+        x = self.head(x)
         batch_size, sequence_length, vocab_size = x.size()
         assert vocab_size == self.config.vocab_size
 
         return x
 
-    def init_weights(self, module: nn.Module, depth: int):
+    def apply_initial_weights(self, module: nn.Module, depth: int):
+        # Embeddings initialisation
         if isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(
-                module.weight,
-                mean=0.0,
-                std=math.sqrt(2.0 / 5 / self.config.hidden_size),
-            )
-        elif isinstance(module, nn.Linear):
-            torch.nn.init.normal_(
-                module.weight,
-                mean=0.0,
-                std=math.sqrt(2.0 / 5 / self.config.hidden_size),
-            )
-            if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
-        for name, p in module.named_parameters():
-            if (
-                name == "proj.weight" and isinstance(module, CodeGeeXNanoFeedForward)
-            ) or (
-                name == "w3.weight"
-                and isinstance(module, SwiGLU)
-                or (
-                    name == "proj.weight"
-                    and isinstance(module, CodeGeeXNanoMultiHeadCausalFlashAttention)
-                )
-            ):
-                nn.init.normal_(
-                    p, mean=0.0, std=1 / math.sqrt(self.config.hidden_size) / depth
-                )
+            module.weight.data.normal_(mean=0.0, std=self.config.init_std)
+            return
+
+        # Layers initialisation
+        if isinstance(module, nn.Linear):
+            module.weight.data.normal_(mean=0.0, std=self.config.init_std)
+            assert module.bias is None, "Our model is completely unbiased!"
 
     def build_rope_cache(self, device: torch.device, dtype: torch.dtype):
         theta = 1.0 / (
@@ -191,11 +172,30 @@ class CodeGeeXNanoModel(nn.Module):
         return cos, sin
 
 
+class CodeGeeXNanoBlock(nn.Module):
+    def __init__(self, config: CodeGeeXNanoConfig, layer_index: int):
+        super().__init__()
+        self.config = config
+        self.layer_index = layer_index
+        self.pre_norm = CodeGeeXNanoRMSNorm(config)
+        self.attention = CodeGeeXNanoMultiHeadCausalFlashAttention(config)
+        self.post_attention_norm = CodeGeeXNanoRMSNorm(config)
+        self.feedforward = CodeGeeXNanoFeedForward(config)
+
+    def forward(self, x: torch.Tensor, rope: RoPECache):
+        batch_size, sequence_length, hidden_size = x.size()
+        assert hidden_size == self.config.hidden_size
+
+        x = x + self.attention(self.pre_norm(x), rope)
+        x = x + self.feedforward(self.post_attention_norm(x))
+
+        return x
+
+
 class CodeGeeXNanoMultiHeadCausalFlashAttention(nn.Module):
     def __init__(self, config: CodeGeeXNanoConfig):
         super().__init__()
         self.config = config
-
         self.attention = nn.Linear(
             self.config.hidden_size,
             self.config.hidden_size * 3,
@@ -221,6 +221,7 @@ class CodeGeeXNanoMultiHeadCausalFlashAttention(nn.Module):
 
         cos, sin = rope
 
+        # We apply RoPE in FP32, TinyLLaMa suggests it's more stable.
         q, k, v = x.unbind(dim=2)
         q = ApplyRoPE.apply(q.type_as(cos), cos, sin).type_as(v)  # type: ignore
         k = ApplyRoPE.apply(k.type_as(cos), cos, sin).type_as(v)  # type: ignore
@@ -236,7 +237,7 @@ class CodeGeeXNanoMultiHeadCausalFlashAttention(nn.Module):
 
         return x
 
-    def scaled_dot_product_attention(self, x: torch.Tensor):
+    def scaled_dot_product_attention(self, x: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, _, num_heads, head_size = x.size()
         assert (
             num_heads == self.config.num_attention_heads
@@ -245,22 +246,33 @@ class CodeGeeXNanoMultiHeadCausalFlashAttention(nn.Module):
             head_size == self.config.head_size
         ), f"{head_size} != {self.config.head_size} (x.shape={x.shape})"
 
-        return flash_attn_qkvpacked_func(x, causal=True)
+        return flash_attn_qkvpacked_func(x, causal=True)  # type: ignore
 
 
 class CodeGeeXNanoFeedForward(nn.Module):
     def __init__(self, config: CodeGeeXNanoConfig):
         super().__init__()
-        self.swiglu = SwiGLU(
-            config.hidden_size,
-            config.intermediate_size,
-            bias=False,
-            # Performance decreases slightly when using packed weights.
-            _pack_weights=False,
+        self.up = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
+        self.linear = nn.Linear(
+            config.intermediate_size, config.intermediate_size, bias=False
         )
+        self.down = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
 
     def forward(self, x: torch.Tensor):
-        return self.swiglu(x)
+        assert x.dtype in (
+            torch.float16,
+            torch.bfloat16,
+        ), f"XFormers SwiGLU is not optimized for {x.dtype}"
+
+        return xformers_swiglu(
+            x,
+            self.up.weight,
+            None,  # up bias
+            self.linear.weight,
+            None,  # linear bias
+            self.down.weight,
+            None,  # down bias
+        )
 
 
 class CodeGeeXNanoRMSNorm(nn.Module):
@@ -280,26 +292,3 @@ class CodeGeeXNanoRMSNorm(nn.Module):
         norm = self.normalize(x.float())
         norm = norm * (1.0 + self.weight.float())
         return norm.type_as(x)
-
-
-class CodeGeeXNanoBlock(nn.Module):
-    def __init__(self, config: CodeGeeXNanoConfig):
-        super().__init__()
-        self.config = config
-        self.pre_norm = CodeGeeXNanoRMSNorm(config)
-        self.attention = CodeGeeXNanoMultiHeadCausalFlashAttention(config)
-        self.post_attention_norm = CodeGeeXNanoRMSNorm(config)
-        self.feedforward = CodeGeeXNanoFeedForward(config)
-
-    def forward(self, x: torch.Tensor, rope: RoPECache):
-        batch_size, sequence_length, hidden_size = x.size()
-        assert hidden_size == self.config.hidden_size
-
-        residual = x
-
-        x = self.pre_norm(x)
-        x = self.attention(x, rope) + residual
-        x = self.post_attention_norm(x)
-        x = self.feedforward(x) + residual
-
-        return x
