@@ -21,6 +21,18 @@ docker run --detach --name codegeex --gpus all --shm-size 1G --volume /workspace
 docker exec -it codegeex /bin/bash
 ```
 
+## Training
+
+```bash
+OMP_NUM_THREADS=4 torchrun --nnodes=1 --nproc-per-node=8 train.py --config emma.Emma700M --compile
+```
+
+## Preprocessing
+
+```bash
+python convert_streaming.py --input '/data/0404/transfer/codedata_sampled_infilling_0331/**/*.jsonl' --output '/data/workspace/luojiesi/datasets/mds/codegeex'
+```
+
 ## Dependencies
 
 The official NVIDIA PyTorch image comes pre-packaged with the following dependencies.

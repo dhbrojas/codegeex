@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Iterable, Tuple
 
 import torch
 
@@ -7,11 +7,13 @@ import torch
 class Config(ABC):
     def __init__(
         self,
+        name: str,
         steps: int,
         sequence_length: int,
         micro_batch_size: int,
         gradient_accumulation_steps: int,
     ):
+        self.name = name
         self.steps = steps
         self.sequence_length = sequence_length
         self.micro_batch_size = micro_batch_size
@@ -35,6 +37,12 @@ class Config(ABC):
     def random_input(
         self, device: torch.device
     ) -> Tuple[Tuple[Any, ...], Dict[str, Any]]:
+        pass
+
+    @abstractmethod
+    def dataloader(
+        self, device: torch.device
+    ) -> Iterable[Tuple[Tuple[Any, ...], Dict[str, Any]]]:
         pass
 
     @property

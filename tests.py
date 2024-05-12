@@ -1,60 +1,56 @@
-import os
 import time
 import unittest
 
-from tokengeex import Tokenizer
-from torch.utils.data import DataLoader
+import torch
 from tqdm import tqdm
 
-from codegeex.datasets import BinaryFileDataset
+from emma import Emma800M
 
 
-def file_size_bytes(file_path):
-    return os.path.getsize(file_path)
+class TestEmma800M(unittest.TestCase):
+    def test_dataloader(self):
+        emma = Emma800M()
+        lang = emma.tokenizer.special_token_to_id("<|lang|>")
 
+        for i, (args, kwargs) in tqdm(enumerate(emma.dataloader(torch.device("cpu")))):
+            x, y = args
+            assert x.shape == (
+                emma.micro_batch_size,
+                emma.sequence_length,
+            ), f"{x.shape} != {(emma.micro_batch_size, emma.sequence_length)}"
+            assert y.shape == (
+                emma.micro_batch_size,
+                emma.sequence_length,
+            ), f"{y.shape} != {(emma.micro_batch_size, emma.sequence_length)}"
 
-class TestBinaryFileDataset(unittest.TestCase):
-    def test_read(self):
-        filepath = "/workspace/datasets/tokenized/tokengeex/exact-32k-merged/train.bin"
-        batch_size = 256
-        sequence_length = 4096
+            langs = []
+            # In X, find each <|lang|> token and find the token that follows it
+            for j in range(x.shape[0]):
+                lang_indices = torch.where(x[j] == lang)[0]
+                if len(lang_indices) == 0:
+                    continue
+                lang_indices = lang_indices.tolist()
+                for lang_index in lang_indices:
+                    if lang_index + 1 >= x.shape[1]:
+                        continue
+                    next_token = x[j, lang_index + 1].item()
+                    langs.append(emma.tokenizer.id_to_token(next_token))
 
-        dataset = BinaryFileDataset(filepath, sequence_length)
-
-        print(f"Size: {len(dataset)}")
-        print(f"File size: {file_size_bytes(filepath)}")
-        print(f"Mmap size: {len(dataset.mmap)}")
-
-        assert len(dataset.mmap) == file_size_bytes(filepath) // 4
-        assert len(dataset) == file_size_bytes(filepath) // 4 // sequence_length
-
-        dataloader = DataLoader(
-            dataset,
-            batch_size=batch_size,
-            drop_last=True,
-            num_workers=1,
-            prefetch_factor=2,
-            pin_memory=False,
-        )
-
-        tokenizer = Tokenizer.from_file("resources/tokengeex/exact-32k-merged.json")
-
-        elapsed = []
-
-        for i, (x, y) in tqdm(
-            enumerate(dataloader),
-            total=len(dataset) // batch_size,
-            desc=f"Size: {len(dataset)}",
-        ):
-            start = time.perf_counter_ns()
-            elapsed.append(time.perf_counter_ns() - start)
+            langs = [v.decode("utf-8") for v in langs]
+            langs = {k: langs.count(k) for k in set(langs)}
+            print(f"{langs}")
+            time.sleep(0.5)
 
             if i == 0:
-                trimmed_x = x[0].tolist()[:256]
-                trimmed_y = y[0].tolist()[:256]
+                trimmed_x = x[0].tolist()[:1024]
+                trimmed_y = y[0].tolist()[:1024]
 
-                decoded_x = tokenizer.decode(trimmed_x, include_special_tokens=True)
-                decoded_y = tokenizer.decode(trimmed_y, include_special_tokens=True)
+                decoded_x = emma.tokenizer.decode(
+                    trimmed_x, include_special_tokens=True
+                )
+                decoded_y = emma.tokenizer.decode(
+                    trimmed_y, include_special_tokens=True
+                )
 
                 print("-" * 80)
                 print(trimmed_x)
@@ -66,10 +62,8 @@ class TestBinaryFileDataset(unittest.TestCase):
                 print(decoded_y)
                 print("-" * 80)
 
-            self.assertEqual(x.shape, (batch_size, sequence_length))
-            self.assertEqual(y.shape, (batch_size, sequence_length))
-
-        print(f"Average time: {sum(elapsed) / len(elapsed):.2f}ns")
+            if i > 10000:
+                break
 
 
 if __name__ == "__main__":

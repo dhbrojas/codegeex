@@ -98,7 +98,7 @@ class CodeGeeXNanoModel(nn.Module):
         batch_size, sequence_length = inputs.size()
         assert sequence_length <= self.config.max_position_embeddings
 
-        x = self.transformer.embeddings(inputs)
+        x = self.embeddings(inputs)
         batch_size, sequence_length, hidden_size = x.size()
         assert hidden_size == self.config.hidden_size
 
@@ -115,7 +115,7 @@ class CodeGeeXNanoModel(nn.Module):
         cos, sin = self.rope
         cos, sin = cos[:sequence_length], sin[:sequence_length]
 
-        for layer in self.transformer.layers:
+        for layer in self.layers:
             x = layer(x, self.rope)
 
         x = self.head(x)
@@ -252,27 +252,20 @@ class CodeGeeXNanoMultiHeadCausalFlashAttention(nn.Module):
 class CodeGeeXNanoFeedForward(nn.Module):
     def __init__(self, config: CodeGeeXNanoConfig):
         super().__init__()
-        self.up = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
-        self.linear = nn.Linear(
-            config.intermediate_size, config.intermediate_size, bias=False
-        )
-        self.down = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+        self.w1 = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+        self.w2 = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+        self.w3 = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
 
     def forward(self, x: torch.Tensor):
-        assert x.dtype in (
-            torch.float16,
-            torch.bfloat16,
-        ), f"XFormers SwiGLU is not optimized for {x.dtype}"
-
         return xformers_swiglu(
-            x,
-            self.up.weight,
-            None,  # up bias
-            self.linear.weight,
-            None,  # linear bias
-            self.down.weight,
-            None,  # down bias
-        )
+            x.bfloat16(),
+            self.w1.weight,
+            None,  # w1 bias
+            self.w2.weight,
+            None,  # w2 bias
+            self.w3.weight,
+            None,  # w3 bias
+        ).type_as(x)
 
 
 class CodeGeeXNanoRMSNorm(nn.Module):
