@@ -4,12 +4,12 @@ import unittest
 import torch
 from tqdm import tqdm
 
-from emma import Emma800M
+from nano import Nano800M32KHFDeepSeekCoder
 
 
-class TestEmma800M(unittest.TestCase):
+class TestNano32K800M(unittest.TestCase):
     def test_dataloader(self):
-        emma = Emma800M()
+        emma = Nano800M32KHFDeepSeekCoder()
         lang = emma.tokenizer.special_token_to_id("<|lang|>")
 
         for i, (args, kwargs) in tqdm(enumerate(emma.dataloader(torch.device("cpu")))):
@@ -24,7 +24,6 @@ class TestEmma800M(unittest.TestCase):
             ), f"{y.shape} != {(emma.micro_batch_size, emma.sequence_length)}"
 
             langs = []
-            # In X, find each <|lang|> token and find the token that follows it
             for j in range(x.shape[0]):
                 lang_indices = torch.where(x[j] == lang)[0]
                 if len(lang_indices) == 0:

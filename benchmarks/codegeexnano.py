@@ -22,7 +22,9 @@ MIN_LR = 1e-6
 config = CodeGeeXNanoConfig()
 model = CodeGeeXNanoForCausalLM(config).cuda()
 
-print_model_information(model, config)
+print_model_information(
+    model, config.num_layers, config.hidden_size, config.max_position_embeddings
+)
 
 optimizer = AdamW(model.parameters(), lr=MAX_LR)
 scheduler = CosineAnnealingLR(optimizer, STEPS, eta_min=MIN_LR)

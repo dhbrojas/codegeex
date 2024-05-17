@@ -1,83 +1,121 @@
 """
-Utility script for tokenizing and preprocessing text data for LLM pre-training.
-Expects an array of binary files which contain 0x00 separated UTF-8 encoded
-samples.
+Convert a JSONL dataset to a streaming dataset.
 """
 
-import argparse
 import glob
+import json
 import logging
 import os
 import random
+import sys
+from argparse import ArgumentParser
 
-import numpy as np
-from tokengeex import Tokenizer as TokenGeeXTokenizer
-
-from utils.tokenizers import WrappedTokenGeeXTokenizer
+from streaming import MDSWriter
+from tqdm import tqdm
 
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Tokenize and preprocess text data")
+    parser = ArgumentParser()
     parser.add_argument(
-        "-i",
+        "--input",
         type=str,
         required=True,
-        help="Glob pattern for input text files (e.g. data/*.txt)",
+        help="Glob pattern to the input JSONL files.",
     )
     parser.add_argument(
-        "-o", type=str, required=True, help="Output file for tokenized data"
-    )
-    parser.add_argument(
-        "--tokenizer",
+        "--output",
         type=str,
         required=True,
-        choices=["tiktoken", "tokengeex"],
-        help="Tokenizer to use for tokenization",
-    )
-    parser.add_argument(
-        "--vocab",
-        type=str,
-        required=True,
-        help="Path to vocabulary file for the tokenizer",
+        help="Path to the output directory.",
     )
     args = parser.parse_args()
 
-    if args.tokenizer == "tiktoken":
-        raise NotImplementedError("TiktokenTokenizer not implemented yet")
-    elif args.tokenizer == "tokengeex":
-        tokenizer = WrappedTokenGeeXTokenizer(TokenGeeXTokenizer.from_file(args.vocab))
-    else:
-        raise ValueError(f"Unknown tokenizer: {args.tokenizer}")
+    with MDSWriter(
+        out=args.output,
+        columns={"prefix": "str", "suffix": "str", "middle": "str", "lang": "str"},
+        hashes=["sha1"],
+        compression="zstd:7",
+        size_limit="256MB",
+    ) as writer:
+        files = glob.glob(args.input)
+        random.shuffle(files)
+        progress = tqdm(files)
+        num_faulty_samples = 0
+        num_samples = 0
 
-    os.makedirs(os.path.dirname(args.o), exist_ok=True)
+        for file in progress:
+            progress.set_postfix(
+                file=os.path.basename(file),
+                faulty=f"{num_faulty_samples:,}",
+                faulty_rate=f"{(num_faulty_samples / num_samples) if num_samples > 0 else 0:.2f}",
+                total=f"{num_samples:,}",
+            )
 
-    eos = tokenizer.special_token_to_id("<|eos|>")
-    assert eos is not None
+            with open(file, "r") as f:
+                for i, line in enumerate(f):
+                    if line is None or line == "":
+                        continue
 
-    data = []
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        logging.warning(
+                            f"Failed to parse JSONL line in '{file}'. Skipping."
+                        )
+                        continue
 
-    for filepath in glob.glob(args.i):
-        logging.info(f"Processing '{filepath}'")
+                    if data is None:
+                        continue
 
-        with open(filepath, "rb") as f:
-            samples = [sample.decode("utf-8") for sample in f.read().split(b"\x00")]
+                    num_samples += 1
 
-            # Batch samples for more efficient tokenization
-            batch_size = 4096
-            for i in range(0, len(samples), batch_size):
-                batch = samples[i : i + batch_size]
-                allids = tokenizer.encode_batch(batch, include_special_tokens=False)
+                    required_keys = [
+                        "code",
+                        "prefix",
+                        "suffix",
+                        "middle",
+                        "lang",
+                    ]
 
-                for ids in allids:
-                    ids = [eos] + ids
-                    data.append(np.array(ids, dtype=np.uint32))
+                    keys = list(data.keys())
 
-    random.shuffle(data)
+                    if not all(key in keys for key in required_keys):
+                        logging.warning(
+                            f"Missing keys. Expected {required_keys}. Got {keys}. Skipping."
+                        )
+                        num_faulty_samples += 1
+                        sys.exit(1)
 
-    data = np.concatenate(data)
-    data.tofile(args.o)
+                    prefix, suffix, middle, lang, code = (
+                        data.get("prefix", None),
+                        data.get("suffix", None),
+                        data.get("middle", None),
+                        data.get("lang", None),
+                        data.get("code", None),
+                    )
+                    prefix = prefix if prefix else code
+                    suffix = suffix if suffix else ""
+                    middle = middle if middle else ""
+                    lang = lang if lang else ""
+
+                    if not all(
+                        isinstance(x, str) for x in [prefix, suffix, middle, lang]
+                    ):
+                        logging.warning(
+                            f"Invalid type. Expected 'str' for prefix, suffix, middle, lang. Got {type(prefix)}, {type(suffix)}, {type(middle)}, {type(lang)}. Skipping."
+                        )
+                        num_faulty_samples += 1
+                        sys.exit(1)
+
+                    writer.write(
+                        sample={
+                            "prefix": prefix,
+                            "middle": middle,
+                            "suffix": suffix,
+                            "lang": lang,
+                        }
+                    )

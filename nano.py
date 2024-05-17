@@ -9,6 +9,7 @@ import torch
 import torch.distributed as dist
 from streaming.base import LocalDataset
 from tokengeex import Tokenizer as TokenGeeXTokenizer  # type: ignore
+from tokenizers import Tokenizer as HFTokenizer
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, DistributedSampler
@@ -17,20 +18,24 @@ from codegeex.config import Config
 from codegeex.datasets import SampleProcessor
 from codegeex.lr import warmup_cosine_decay
 from codegeex.models.nano import CodeGeeXNanoConfig, CodeGeeXNanoForCausalLM
-from codegeex.tokenizers import WrappedTokenGeeXTokenizer
+from codegeex.tokenizers import Tokenizer, WrappedHFTokenizer, WrappedTokenGeeXTokenizer
 
 
-class Emma800M(Config):
-    def __init__(self):
+class Nano800M(Config):
+    def __init__(
+        self,
+        postfix: str,
+        micro_batch_size: int,
+        gradient_accumulation_steps: int,
+        padded_vocab_size: int,
+        tokenizer: Tokenizer,
+    ):
         super().__init__(
-            "emma-800m",
+            f"nano-800m-{postfix}",
             steps=10000,
             sequence_length=2048,
-            micro_batch_size=10,
-            gradient_accumulation_steps=192,
-        )
-        tokenizer = TokenGeeXTokenizer.from_file(
-            "resources/tokengeex/exact-32k-merged.json"
+            micro_batch_size=micro_batch_size,
+            gradient_accumulation_steps=gradient_accumulation_steps,
         )
         tokenizer.add_special_tokens(
             [
@@ -41,10 +46,8 @@ class Emma800M(Config):
                 "<|eos|>",
             ]
         )
-        self.tokenizer = WrappedTokenGeeXTokenizer(
-            tokenizer=tokenizer,
-        )
-        self.padded_vocab_size = 32768
+        self.tokenizer = tokenizer
+        self.padded_vocab_size = padded_vocab_size
         assert self.padded_vocab_size >= self.tokenizer.vocab_size()
 
     def model(self) -> torch.nn.Module:
@@ -150,3 +153,54 @@ class Emma800M(Config):
             pin_memory_device=str(device),
             collate_fn=collate_fn,
         )
+
+
+class Nano800M32K(Nano800M):
+    def __init__(self, postfix: str, tokenizer: Tokenizer):
+        super().__init__(
+            postfix=f"32k-{postfix}",
+            gradient_accumulation_steps=192,
+            micro_batch_size=10,
+            padded_vocab_size=2**15,
+            tokenizer=tokenizer,
+        )
+
+
+class Nano800M32KTokenGeeXExact(Nano800M32K):
+    def __init__(self):
+        tokenizer = TokenGeeXTokenizer.from_file(
+            "resources/tokengeex/exact-32k-merged.json"
+        )
+        tokenizer = WrappedTokenGeeXTokenizer(
+            tokenizer=tokenizer,
+        )
+        super().__init__("tokengeex-exact", tokenizer)
+
+
+class Nano800M32KTokenGeeXGeneral(Nano800M32K):
+    def __init__(self):
+        tokenizer = TokenGeeXTokenizer.from_file(
+            "resources/tokengeex/general-32k-merged.json"
+        )
+        tokenizer = WrappedTokenGeeXTokenizer(
+            tokenizer=tokenizer,
+        )
+        super().__init__("tokengeex-general", tokenizer)
+
+
+class Nano800M32KTokenGeeXGPT4(Nano800M32K):
+    def __init__(self):
+        tokenizer = TokenGeeXTokenizer.from_file("resources/tokengeex/gpt4-32k.json")
+        tokenizer = WrappedTokenGeeXTokenizer(
+            tokenizer=tokenizer,
+        )
+        super().__init__("tokengeex-gpt4", tokenizer)
+
+
+class Nano800M32KHFDeepSeekCoder(Nano800M32K):
+    def __init__(self):
+        tokenizer = HFTokenizer.from_file("resources/hf/deepseek-coder-32k.json")
+        tokenizer = WrappedHFTokenizer(
+            tokenizer=tokenizer,
+        )
+        super().__init__("hf-deepseek", tokenizer)

@@ -23,8 +23,6 @@ def run(
     checkpoint_dir: str,
     checkpoint_interval: int,
     config: Config,
-    world_size: int,
-    rank: int,
     device: torch.device,
 ):
     metrics = MetricsReporter(checkpoint_dir)
@@ -33,8 +31,8 @@ def run(
     scheduler = config.lr_scheduler(optimizer)
 
     assert (
-        config.gradient_accumulation_steps % world_size == 0
-    ), f"{config.gradient_accumulation_steps} must be divisible by {world_size}"
+        config.gradient_accumulation_steps % dist.get_world_size() == 0
+    ), f"{config.gradient_accumulation_steps} must be divisible by {dist.get_world_size()}"
 
     print_rank_0(f"Running on {dist.get_world_size()} GPUs")
     print_rank_0(
@@ -59,7 +57,7 @@ def run(
 
     print_rank_0("Starting training")
 
-    while step.index <= config.steps:
+    while step.index < config.steps:
         # Epoch
         dataloader = config.dataloader(device)
         for i, (args, kwargs) in enumerate(dataloader):
@@ -106,7 +104,7 @@ def run(
                     )
 
             if step.index >= config.steps:
-                continue
+                break
 
         epoch += 1
 
@@ -138,7 +136,5 @@ if __name__ == "__main__":
         checkpoint_dir,
         checkpoint_interval,
         config,
-        dist.get_world_size(),
-        dist.get_rank(),
         device,
     )
