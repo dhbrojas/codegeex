@@ -5,7 +5,7 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 from flash_attn import flash_attn_qkvpacked_func
-from xformers.ops import swiglu as xformers_swiglu
+from xformers.ops import swiglu as xformers_swiglu  # type: ignore
 
 from codegeex.rope import ApplyRoPE
 
@@ -69,12 +69,19 @@ class CodeGeeXNanoForCausalLM(nn.Module):
         batch_size, sequence_length, vocab_size = outputs.size()
 
         outputs = outputs.view(-1, vocab_size).float()
-        targets = targets.view(-1)
 
-        return nn.functional.cross_entropy(
-            outputs,
-            targets,
-        )
+        if targets.dim() == 3:
+            targets = targets.view(-1, vocab_size)
+            return nn.functional.binary_cross_entropy_with_logits(
+                outputs,
+                targets,
+            )
+        else:
+            targets = targets.view(-1)
+            return nn.functional.cross_entropy(
+                outputs,
+                targets,
+            )
 
 
 class CodeGeeXNanoModel(nn.Module):

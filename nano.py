@@ -15,10 +15,18 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, DistributedSampler
 
 from codegeex.config import Config
-from codegeex.datasets import SampleProcessor
+from codegeex.datasets import (
+    FIMManyTokenPredictionProcessor,
+    FIMNextTokenPredictionProcessor,
+)
 from codegeex.lr import warmup_cosine_decay
 from codegeex.models.nano import CodeGeeXNanoConfig, CodeGeeXNanoForCausalLM
-from codegeex.tokenizers import Tokenizer, WrappedHFTokenizer, WrappedTokenGeeXTokenizer
+from codegeex.tokenizers import (
+    Tokenizer,
+    WrappedHFTokenizer,
+    WrappedTokenGeeXTokenizer,
+    load_custom_tiktoken_tokenizer,
+)
 
 
 class Nano800M(Config):
@@ -29,6 +37,7 @@ class Nano800M(Config):
         gradient_accumulation_steps: int,
         padded_vocab_size: int,
         tokenizer: Tokenizer,
+        mpt: bool = False,
     ):
         super().__init__(
             f"nano-800m-{postfix}",
@@ -48,6 +57,7 @@ class Nano800M(Config):
         )
         self.tokenizer = tokenizer
         self.padded_vocab_size = padded_vocab_size
+        self.mpt = mpt
         assert self.padded_vocab_size >= self.tokenizer.vocab_size()
 
     def model(self) -> torch.nn.Module:
@@ -105,6 +115,16 @@ class Nano800M(Config):
                     self.tokenizer.vocab_size(),
                     (self.micro_batch_size, self.sequence_length),
                     device=device,
+                )
+                if not self.mpt
+                else torch.rand(
+                    (
+                        self.micro_batch_size,
+                        self.sequence_length,
+                        self.padded_vocab_size,
+                    ),
+                    device=device,
+                    dtype=torch.float32,
                 ),
             ),
             {},
@@ -139,14 +159,34 @@ class Nano800M(Config):
 
         cpu = device.type == "cpu"
 
-        return DataLoader(
-            SampleProcessor(
+        if self.mpt:
+            tokenizer = self.tokenizer.unwrap()
+            assert isinstance(tokenizer, TokenGeeXTokenizer)
+
+            def f(tokens: List[bytes]) -> List[float]:
+                max_len = max(len(t) for t in tokens)
+                return [float(len(t) / max_len) for t in tokens]
+
+            wrapped_dataset = FIMManyTokenPredictionProcessor(
+                dataset,
+                sampler=sampler,
+                tokenizer=tokenizer,
+                micro_batch_size=self.micro_batch_size,
+                sequence_length=self.sequence_length,
+                padded_vocab_size=self.padded_vocab_size,
+                f=f,
+            )
+        else:
+            wrapped_dataset = FIMNextTokenPredictionProcessor(
                 dataset,
                 sampler=sampler,
                 tokenizer=self.tokenizer,
                 micro_batch_size=self.micro_batch_size,
                 sequence_length=self.sequence_length,
-            ),
+            )
+
+        return DataLoader(
+            wrapped_dataset,
             num_workers=2 if not cpu else 0,
             prefetch_factor=2 if not cpu else None,
             pin_memory=not cpu,
@@ -156,13 +196,19 @@ class Nano800M(Config):
 
 
 class Nano800M32K(Nano800M):
-    def __init__(self, postfix: str, tokenizer: Tokenizer):
+    def __init__(
+        self,
+        postfix: str,
+        tokenizer: Tokenizer,
+        mpt: bool = False,
+    ):
         super().__init__(
             postfix=f"32k-{postfix}",
             gradient_accumulation_steps=192,
             micro_batch_size=10,
             padded_vocab_size=2**15,
             tokenizer=tokenizer,
+            mpt=mpt,
         )
 
 
@@ -188,13 +234,25 @@ class Nano800M32KTokenGeeXGeneral(Nano800M32K):
         super().__init__("tokengeex-general", tokenizer)
 
 
-class Nano800M32KTokenGeeXGPT4(Nano800M32K):
+class Nano800M32KTokenGeeXGeneralMTP(Nano800M32K):
     def __init__(self):
-        tokenizer = TokenGeeXTokenizer.from_file("resources/tokengeex/gpt4-32k.json")
+        tokenizer = TokenGeeXTokenizer.from_file(
+            "resources/tokengeex/general-32k-merged.json"
+        )
         tokenizer = WrappedTokenGeeXTokenizer(
             tokenizer=tokenizer,
         )
-        super().__init__("tokengeex-gpt4", tokenizer)
+        super().__init__("tokengeex-general-mtp", tokenizer, mpt=True)
+
+
+class Nano800M32KTikTokenGPT4(Nano800M32K):
+    def __init__(self):
+        tokenizer = load_custom_tiktoken_tokenizer(
+            "resources/tiktoken/gpt4-32k.tiktoken",
+            "gpt-4",
+            [],
+        )
+        super().__init__("tiktoken-gpt4", tokenizer)
 
 
 class Nano800M32KHFDeepSeekCoder(Nano800M32K):

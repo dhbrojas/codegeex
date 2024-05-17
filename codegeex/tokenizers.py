@@ -2,10 +2,12 @@
 A collection of classes for tokenization and tokenizers.
 """
 
+import base64
 from abc import ABC, abstractmethod
-from typing import List
+from typing import List, Union
 
 from tiktoken import Encoding as TiktokenTokenizer
+from tiktoken import encoding_for_model as tiktoken_encoding_for_model
 from tokengeex import Tokenizer as TokenGeeXTokenizer
 from tokenizers import Tokenizer as HFTokenizer
 
@@ -59,6 +61,10 @@ class Tokenizer(ABC):
     def id_to_special_token(self, id: int) -> str | None:
         pass
 
+    @abstractmethod
+    def unwrap(self) -> Union[HFTokenizer, TokenGeeXTokenizer, TiktokenTokenizer]:
+        pass
+
 
 class WrappedTokenGeeXTokenizer(Tokenizer):
     def __init__(self, tokenizer: TokenGeeXTokenizer):
@@ -109,6 +115,9 @@ class WrappedTokenGeeXTokenizer(Tokenizer):
     def id_to_special_token(self, id: int) -> str | None:
         return self.tokenizer.id_to_special_token(id)
 
+    def unwrap(self) -> TokenGeeXTokenizer:
+        return self.tokenizer
+
 
 class WrappedTiktokenTokenizer(Tokenizer):
     def __init__(self, tokenizer: TiktokenTokenizer):
@@ -127,9 +136,9 @@ class WrappedTiktokenTokenizer(Tokenizer):
         return self.tokenizer.encode_ordinary_batch(texts)
 
     def decode(self, tokens: List[int], include_special_tokens: bool = False) -> str:
-        if include_special_tokens:
+        if not include_special_tokens:
             raise NotImplementedError(
-                "Tiktoken does not support decoding with special tokens."
+                "Tiktoken does not support decoding without special tokens."
             )
         return self.tokenizer.decode(tokens)
 
@@ -149,6 +158,8 @@ class WrappedTiktokenTokenizer(Tokenizer):
         return list(self.tokenizer.special_tokens_set)
 
     def add_special_tokens(self, tokens: List[str]):
+        if all([token in self.tokenizer.special_tokens_set for token in tokens]):
+            return
         self.tokenizer = TiktokenTokenizer(
             mergeable_ranks=self.tokenizer._mergeable_ranks,
             pat_str=self.tokenizer._pat_str,
@@ -173,6 +184,9 @@ class WrappedTiktokenTokenizer(Tokenizer):
 
     def id_to_special_token(self, id: int) -> str | None:
         return self.tokenizer.decode_single_token_bytes(id).decode("utf-8")
+
+    def unwrap(self) -> TiktokenTokenizer:
+        return self.tokenizer
 
 
 class WrappedHFTokenizer(Tokenizer):
@@ -225,3 +239,29 @@ class WrappedHFTokenizer(Tokenizer):
 
     def id_to_special_token(self, id: int) -> str | None:
         return self.tokenizer.id_to_token(id)
+
+    def unwrap(self) -> HFTokenizer:
+        return self.tokenizer
+
+
+def load_custom_tiktoken_tokenizer(file: str, model: str, special_tokens: List[str]):
+    with open(file, "rb") as f:
+        contents = f.read()
+        mergeable_ranks = {
+            base64.b64decode(token): int(rank)
+            for token, rank in (line.split() for line in contents.splitlines() if line)
+        }
+
+        source = tiktoken_encoding_for_model(model)
+
+        return WrappedTiktokenTokenizer(
+            TiktokenTokenizer(
+                name="custom",
+                mergeable_ranks=mergeable_ranks,
+                pat_str=source._pat_str,
+                explicit_n_vocab=None,
+                special_tokens={
+                    v: len(mergeable_ranks) + i for i, v in enumerate(special_tokens)
+                },
+            )
+        )
