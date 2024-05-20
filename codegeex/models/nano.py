@@ -83,6 +83,11 @@ class CodeGeeXNanoForCausalLM(nn.Module):
                 targets,
             )
 
+    def generate(self, inputs: torch.Tensor):
+        logits = self.model(inputs)
+        batch_size, sequence_length, vocab_size = logits.size()
+        return torch.argmax(logits, dim=-1)
+
 
 class CodeGeeXNanoModel(nn.Module):
     """

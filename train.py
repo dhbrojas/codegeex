@@ -1,9 +1,11 @@
 import argparse
 import importlib
+import os
 
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
+from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from codegeex.config import Config
 from codegeex.metrics import DistMetric, MetricsReporter
@@ -25,8 +27,15 @@ def run(
     config: Config,
     device: torch.device,
 ):
+    if (
+        dist.get_rank() == 0
+        and os.path.exists(checkpoint_dir)
+        and len(os.listdir(checkpoint_dir)) > 0
+    ):
+        raise ValueError(f"Checkpoint directory {checkpoint_dir} is not empty.")
+
     metrics = MetricsReporter(checkpoint_dir)
-    model = config.model().cuda(device).train()
+    model = config.model().cuda(device).train()  # type: ignore
     optimizer = config.optimizer(model)
     scheduler = config.lr_scheduler(optimizer)
 
@@ -40,13 +49,13 @@ def run(
     )
     print_rank_0(f"Model parameters: {calculate_num_parameters(model):,}")
 
-    save_checkpoint(model, None, None, 0, checkpoint_dir)
-
     # Fake forward pass to compile the model
     if compile:
         model = compile_model(config, model, device)
     else:
         print_rank_0("Running in eager mode, pass --compile to use torch.compile()")
+
+    save_checkpoint(model, None, None, 0, checkpoint_dir, overwrite=False)
 
     print_rank_0("Initializing DDP")
     model = DDP(model, device_ids=[device.index])
@@ -62,8 +71,10 @@ def run(
         dataloader = config.dataloader(device)
         for i, (args, kwargs) in enumerate(dataloader):
             # Forward
-            with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 loss = model(*args, **kwargs)
+                if isinstance(loss, CausalLMOutputWithPast):
+                    loss = loss.loss
 
             # Backward
             loss.backward()
@@ -108,7 +119,7 @@ def run(
 
         epoch += 1
 
-    save_checkpoint(model, None, None, step.index, checkpoint_dir)
+    save_checkpoint(model, None, None, None, checkpoint_dir)
     dist.destroy_process_group()
 
 

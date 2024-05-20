@@ -135,23 +135,38 @@ def save_checkpoint(
     scheduler: Optional[LRScheduler],
     step: Optional[int],
     checkpoint_dir: str,
+    overwrite: bool = False,
 ):
     if dist.get_rank() == 0:
         os.makedirs(checkpoint_dir, exist_ok=True)
+
         model_checkpoint_path = (
             f"{checkpoint_dir}/model.safetensors"
             if step is None
             else f"{checkpoint_dir}/model-{step}.safetensors"
         )
+
+        if not overwrite and os.path.exists(model_checkpoint_path):
+            raise FileExistsError(
+                f"Checkpoint already exists at {model_checkpoint_path}. Delete it or set `overwrite=True`."
+            )
+
         save_model(
             model,
             model_checkpoint_path,
             {"step": f"{step}"} if step is not None else {},
         )
+
         print(f"[CHECKPOINT] kind=model saved_to={model_checkpoint_path}")
 
         if optimizer is not None and scheduler is not None and step is not None:
             state_checkpoint_path = f"{checkpoint_dir}/state-{step}.pt"
+
+            if not overwrite and os.path.exists(state_checkpoint_path):
+                raise FileExistsError(
+                    f"Checkpoint already exists at {state_checkpoint_path}. Delete it or set `overwrite=True`."
+                )
+
             torch.save(
                 {
                     "optimizer": optimizer.state_dict(),

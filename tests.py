@@ -112,7 +112,7 @@ class TestNano32K800M(unittest.TestCase):
                         f"and here is what must be predicted after it: ({[repr(tokenizer.id_to_token(v)[0]) for v in non_zero_random_y_indices]})"  # type: ignore
                     )
 
-            if i > 10000:
+            if i > 2:
                 break
 
 

@@ -64,10 +64,10 @@ class FIMNextTokenPredictionProcessor(IterableDataset):
         )
 
         # FIM (SPM)
-        encoded_prefix = self.tokenizer.encode(prefix, include_special_tokens=False)
-        encoded_middle = self.tokenizer.encode(middle, include_special_tokens=False)
-        encoded_suffix = self.tokenizer.encode(suffix, include_special_tokens=False)
-        encoded_lang = self.tokenizer.encode(lang, include_special_tokens=False)
+        encoded_prefix = self.tokenizer.encode(prefix)
+        encoded_middle = self.tokenizer.encode(middle)
+        encoded_suffix = self.tokenizer.encode(suffix)
+        encoded_lang = self.tokenizer.encode(lang)
 
         self.buffer.extend(
             [self.lang]

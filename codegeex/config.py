@@ -1,7 +1,10 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Iterable, Tuple
+from typing import Any, Dict, Iterable, Tuple, Union
 
 import torch
+from transformers import PreTrainedModel
+
+from codegeex.tokenizers import Tokenizer
 
 
 class Config(ABC):
@@ -12,15 +15,20 @@ class Config(ABC):
         sequence_length: int,
         micro_batch_size: int,
         gradient_accumulation_steps: int,
+        padded_vocab_size: int,
+        tokenizer: Tokenizer,
     ):
         self.name = name
         self.steps = steps
         self.sequence_length = sequence_length
         self.micro_batch_size = micro_batch_size
         self.gradient_accumulation_steps = gradient_accumulation_steps
+        self.padded_vocab_size = padded_vocab_size
+        self.tokenizer = tokenizer
+        assert self.padded_vocab_size >= self.tokenizer.vocab_size()
 
     @abstractmethod
-    def model(self) -> torch.nn.Module:
+    def model(self) -> Union[torch.nn.Module, PreTrainedModel]:
         pass
 
     @abstractmethod

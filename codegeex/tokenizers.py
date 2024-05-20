@@ -14,22 +14,22 @@ from tokenizers import Tokenizer as HFTokenizer
 
 class Tokenizer(ABC):
     @abstractmethod
-    def encode(self, text: str, include_special_tokens: bool = True) -> List[int]:
+    def encode(self, text: str, encode_special_tokens: bool = False) -> List[int]:
         pass
 
     @abstractmethod
     def encode_batch(
-        self, texts: list, include_special_tokens: bool = True
+        self, texts: list, encode_special_tokens: bool = False
     ) -> List[List[int]]:
         pass
 
     @abstractmethod
-    def decode(self, tokens: List[int], include_special_tokens: bool = False) -> str:
+    def decode(self, tokens: List[int], decode_special_tokens: bool = False) -> str:
         pass
 
     @abstractmethod
     def decode_batch(
-        self, tokens: List[List[int]], include_special_tokens: bool = False
+        self, tokens: List[List[int]], decode_special_tokens: bool = False
     ) -> List[str]:
         pass
 
@@ -70,25 +70,25 @@ class WrappedTokenGeeXTokenizer(Tokenizer):
     def __init__(self, tokenizer: TokenGeeXTokenizer):
         self.tokenizer = tokenizer
 
-    def encode(self, text: str, include_special_tokens: bool = True) -> List[int]:
-        if include_special_tokens:
+    def encode(self, text: str, encode_special_tokens: bool = False) -> List[int]:
+        if encode_special_tokens:
             return self.tokenizer.encode(text)
         return self.tokenizer.encode_ordinary(text)
 
     def encode_batch(
-        self, texts: list, include_special_tokens: bool = True
+        self, texts: list, encode_special_tokens: bool = False
     ) -> List[List[int]]:
-        if include_special_tokens:
+        if encode_special_tokens:
             return self.tokenizer.encode_batch(texts)
         return self.tokenizer.encode_ordinary_batch(texts)
 
-    def decode(self, tokens: List[int], include_special_tokens: bool = False) -> str:
-        return self.tokenizer.decode(tokens, include_special_tokens)
+    def decode(self, tokens: List[int], decode_special_tokens: bool = False) -> str:
+        return self.tokenizer.decode(tokens, decode_special_tokens)
 
     def decode_batch(
-        self, tokens: List[List[int]], include_special_tokens: bool = False
+        self, tokens: List[List[int]], decode_special_tokens: bool = False
     ) -> List[str]:
-        return self.tokenizer.decode_batch(tokens, include_special_tokens)
+        return self.tokenizer.decode_batch(tokens, decode_special_tokens)
 
     def vocab_size(self) -> int:
         return self.tokenizer.vocab_size()
@@ -123,29 +123,29 @@ class WrappedTiktokenTokenizer(Tokenizer):
     def __init__(self, tokenizer: TiktokenTokenizer):
         self.tokenizer = tokenizer
 
-    def encode(self, text: str, include_special_tokens: bool = True) -> List[int]:
-        if include_special_tokens:
-            return self.tokenizer.encode(text)
+    def encode(self, text: str, encode_special_tokens: bool = False) -> List[int]:
+        if encode_special_tokens:
+            return self.tokenizer.encode(text, allowed_special="all")
         return self.tokenizer.encode_ordinary(text)
 
     def encode_batch(
-        self, texts: list, include_special_tokens: bool = True
+        self, texts: list, encode_special_tokens: bool = False
     ) -> List[List[int]]:
-        if include_special_tokens:
+        if encode_special_tokens:
             return self.tokenizer.encode_batch(texts)
         return self.tokenizer.encode_ordinary_batch(texts)
 
-    def decode(self, tokens: List[int], include_special_tokens: bool = False) -> str:
-        if not include_special_tokens:
+    def decode(self, tokens: List[int], decode_special_tokens: bool = False) -> str:
+        if not decode_special_tokens:
             raise NotImplementedError(
                 "Tiktoken does not support decoding without special tokens."
             )
         return self.tokenizer.decode(tokens)
 
     def decode_batch(
-        self, tokens: List[List[int]], include_special_tokens: bool = False
+        self, tokens: List[List[int]], decode_special_tokens: bool = False
     ) -> List[str]:
-        if include_special_tokens:
+        if decode_special_tokens:
             raise NotImplementedError(
                 "Tiktoken does not support decoding with special tokens."
             )
@@ -193,25 +193,23 @@ class WrappedHFTokenizer(Tokenizer):
     def __init__(self, tokenizer: HFTokenizer):
         self.tokenizer = tokenizer
 
-    def encode(self, text: str, include_special_tokens: bool = True) -> List[int]:
-        return self.tokenizer.encode(
-            text, add_special_tokens=include_special_tokens
-        ).ids
+    def encode(self, text: str, encode_special_tokens: bool = False) -> List[int]:
+        return self.tokenizer.encode(text, add_special_tokens=encode_special_tokens).ids
 
     def encode_batch(
-        self, texts: List, include_special_tokens: bool = True
+        self, texts: List, encode_special_tokens: bool = False
     ) -> List[List[int]]:
         raise NotImplementedError(
             "Haven't yet implemented this method for HFTokenizer."
         )
 
-    def decode(self, tokens: List[int], include_special_tokens: bool = False) -> str:
+    def decode(self, tokens: List[int], decode_special_tokens: bool = False) -> str:
         return self.tokenizer.decode(
-            tokens, skip_special_tokens=not include_special_tokens
+            tokens, skip_special_tokens=not decode_special_tokens
         )
 
     def decode_batch(
-        self, tokens: List[List[int]], include_special_tokens: bool = False
+        self, tokens: List[List[int]], decode_special_tokens: bool = False
     ):
         raise NotImplementedError(
             "Haven't yet implemented this method for HFTokenizer."

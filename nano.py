@@ -1,7 +1,3 @@
-"""
-The "emma" configuration uses the exact vocabulary from TokenGeeX.
-"""
-
 import os
 from typing import Any, Dict, Iterable, List, Tuple
 
@@ -11,15 +7,15 @@ from streaming.base import LocalDataset
 from tokengeex import Tokenizer as TokenGeeXTokenizer  # type: ignore
 from tokenizers import Tokenizer as HFTokenizer
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import LambdaLR
+from torch.optim.lr_scheduler import LambdaLR, LRScheduler
+from torch.optim.optimizer import Optimizer as Optimizer
 from torch.utils.data import DataLoader, DistributedSampler
 
 from codegeex.config import Config
 from codegeex.datasets import (
-    FIMManyTokenPredictionProcessor,
     FIMNextTokenPredictionProcessor,
 )
-from codegeex.lr import warmup_cosine_decay
+from codegeex.lr import warmup_cosine_decay, warmup_stable_decay
 from codegeex.models.nano import CodeGeeXNanoConfig, CodeGeeXNanoForCausalLM
 from codegeex.tokenizers import (
     Tokenizer,
@@ -29,23 +25,18 @@ from codegeex.tokenizers import (
 )
 
 
-class Nano800M(Config):
+class BaseConfig(Config):
     def __init__(
         self,
-        postfix: str,
+        name: str,
+        steps: int,
+        sequence_length: int,
         micro_batch_size: int,
         gradient_accumulation_steps: int,
         padded_vocab_size: int,
         tokenizer: Tokenizer,
         mpt: bool = False,
     ):
-        super().__init__(
-            f"nano-800m-{postfix}",
-            steps=10000,
-            sequence_length=2048,
-            micro_batch_size=micro_batch_size,
-            gradient_accumulation_steps=gradient_accumulation_steps,
-        )
         tokenizer.add_special_tokens(
             [
                 "<|lang|>",
@@ -55,28 +46,16 @@ class Nano800M(Config):
                 "<|eos|>",
             ]
         )
-        self.tokenizer = tokenizer
-        self.padded_vocab_size = padded_vocab_size
-        self.mpt = mpt
-        assert self.padded_vocab_size >= self.tokenizer.vocab_size()
-
-    def model(self) -> torch.nn.Module:
-        model = CodeGeeXNanoForCausalLM(
-            CodeGeeXNanoConfig(
-                hidden_size=1536,
-                intermediate_size=4096,
-                max_position_embeddings=self.sequence_length,
-                num_attention_heads=16,
-                norm_eps=1e-6,
-                num_layers=24,
-                vocab_size=self.padded_vocab_size,
-                rope_percentage=0.25,
-                rope_scaling_ratio=1,
-                rope_theta=100000,
-            ),
+        super().__init__(
+            name,
+            steps=steps,
+            sequence_length=sequence_length,
+            micro_batch_size=micro_batch_size,
+            gradient_accumulation_steps=gradient_accumulation_steps,
+            padded_vocab_size=padded_vocab_size,
+            tokenizer=tokenizer,
         )
-        model.init_weights()
-        return model
+        self.mpt = mpt
 
     def optimizer(self, model: torch.nn.Module) -> torch.optim.Optimizer:
         return AdamW(
@@ -102,6 +81,8 @@ class Nano800M(Config):
     def random_input(
         self, device: torch.device
     ) -> Tuple[Tuple[Any, ...], Dict[str, Any]]:
+        if self.mpt:
+            raise NotImplementedError()
         return (
             (
                 torch.randint(
@@ -115,16 +96,6 @@ class Nano800M(Config):
                     self.tokenizer.vocab_size(),
                     (self.micro_batch_size, self.sequence_length),
                     device=device,
-                )
-                if not self.mpt
-                else torch.rand(
-                    (
-                        self.micro_batch_size,
-                        self.sequence_length,
-                        self.padded_vocab_size,
-                    ),
-                    device=device,
-                    dtype=torch.float32,
                 ),
             ),
             {},
@@ -159,40 +130,59 @@ class Nano800M(Config):
 
         cpu = device.type == "cpu"
 
-        if self.mpt:
-            tokenizer = self.tokenizer.unwrap()
-            assert isinstance(tokenizer, TokenGeeXTokenizer)
-
-            def f(tokens: List[bytes]) -> List[float]:
-                max_len = max(len(t) for t in tokens)
-                return [float(len(t) / max_len) for t in tokens]
-
-            wrapped_dataset = FIMManyTokenPredictionProcessor(
-                dataset,
-                sampler=sampler,
-                tokenizer=tokenizer,
-                micro_batch_size=self.micro_batch_size,
-                sequence_length=self.sequence_length,
-                padded_vocab_size=self.padded_vocab_size,
-                f=f,
-            )
-        else:
-            wrapped_dataset = FIMNextTokenPredictionProcessor(
+        return DataLoader(
+            FIMNextTokenPredictionProcessor(
                 dataset,
                 sampler=sampler,
                 tokenizer=self.tokenizer,
                 micro_batch_size=self.micro_batch_size,
                 sequence_length=self.sequence_length,
-            )
-
-        return DataLoader(
-            wrapped_dataset,
+            ),
             num_workers=2 if not cpu else 0,
             prefetch_factor=2 if not cpu else None,
-            pin_memory=not cpu,
+            pin_memory=not (cpu or self.mpt),
             pin_memory_device=str(device),
             collate_fn=collate_fn,
         )
+
+
+class Nano800M(BaseConfig):
+    def __init__(
+        self,
+        postfix: str,
+        micro_batch_size: int,
+        gradient_accumulation_steps: int,
+        padded_vocab_size: int,
+        tokenizer: Tokenizer,
+        mpt: bool = False,
+    ):
+        super().__init__(
+            name=f"nano-800m-{postfix}",
+            steps=10000,
+            sequence_length=2048,
+            micro_batch_size=micro_batch_size,
+            gradient_accumulation_steps=gradient_accumulation_steps,
+            padded_vocab_size=padded_vocab_size,
+            tokenizer=tokenizer,
+        )
+
+    def model(self) -> torch.nn.Module:
+        model = CodeGeeXNanoForCausalLM(
+            CodeGeeXNanoConfig(
+                hidden_size=1536,
+                intermediate_size=4096,
+                max_position_embeddings=self.sequence_length,
+                num_attention_heads=16,
+                norm_eps=1e-6,
+                num_layers=24,
+                vocab_size=self.padded_vocab_size,
+                rope_percentage=0.25,
+                rope_scaling_ratio=1,
+                rope_theta=100000,
+            ),
+        )
+        model.init_weights()
+        return model
 
 
 class Nano800M32K(Nano800M):
@@ -223,6 +213,28 @@ class Nano800M32KTokenGeeXExact(Nano800M32K):
         super().__init__("tokengeex-exact", tokenizer)
 
 
+class Nano800M32KTokenGeeXExactWSD(Nano800M32K):
+    def __init__(self):
+        tokenizer = TokenGeeXTokenizer.from_file(
+            "resources/tokengeex/exact-32k-merged.json"
+        )
+        tokenizer = WrappedTokenGeeXTokenizer(
+            tokenizer=tokenizer,
+        )
+        super().__init__("tokengeex-exact-wsd", tokenizer)
+
+    def lr_scheduler(self, optimizer: Optimizer) -> LRScheduler:
+        return LambdaLR(
+            optimizer,
+            warmup_stable_decay(
+                W=self.steps * 0.1,
+                S=self.steps * 0.9,
+                D=self.steps,
+                min_lr_scale_factor=0.1,
+            ),
+        )
+
+
 class Nano800M32KTokenGeeXGeneral(Nano800M32K):
     def __init__(self):
         tokenizer = TokenGeeXTokenizer.from_file(
@@ -232,17 +244,6 @@ class Nano800M32KTokenGeeXGeneral(Nano800M32K):
             tokenizer=tokenizer,
         )
         super().__init__("tokengeex-general", tokenizer)
-
-
-class Nano800M32KTokenGeeXGeneralMTP(Nano800M32K):
-    def __init__(self):
-        tokenizer = TokenGeeXTokenizer.from_file(
-            "resources/tokengeex/general-32k-merged.json"
-        )
-        tokenizer = WrappedTokenGeeXTokenizer(
-            tokenizer=tokenizer,
-        )
-        super().__init__("tokengeex-general-mtp", tokenizer, mpt=True)
 
 
 class Nano800M32KTikTokenGPT4(Nano800M32K):
