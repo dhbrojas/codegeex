@@ -36,7 +36,7 @@ def total_tokens_processed(step: int, config: Config) -> int:
 
 
 def step_tokens_per_second(step_duration: float, config: Config) -> float:
-    return config.tokens_per_batch / step_duration
+    return (config.tokens_per_batch / step_duration) if step_duration else 0.0
 
 
 def print_rank_0(*args, **kwargs):
@@ -205,3 +205,6 @@ class StepTracker:
             self.index += 1
             return True
         return False
+
+    def is_accumulating(self) -> bool:
+        return self.accumulated_steps > 0

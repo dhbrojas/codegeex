@@ -3,11 +3,13 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 import torch
 import torch.distributed as dist
+from flash_attn.models.gpt import GPTLMHeadModel
+from flash_attn.models.llama import LlamaConfig, llama_config_to_gpt2_config
 from streaming.base import LocalDataset
 from tokengeex import Tokenizer as TokenGeeXTokenizer  # type: ignore
 from tokenizers import Tokenizer as HFTokenizer
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import LambdaLR, LRScheduler
+from torch.optim.lr_scheduler import LambdaLR
 from torch.optim.optimizer import Optimizer as Optimizer
 from torch.utils.data import DataLoader, DistributedSampler
 
@@ -15,13 +17,11 @@ from codegeex.config import Config
 from codegeex.datasets import (
     FIMNextTokenPredictionProcessor,
 )
-from codegeex.lr import warmup_cosine_decay, warmup_stable_decay
-from codegeex.models.nano import CodeGeeXNanoConfig, CodeGeeXNanoForCausalLM
+from codegeex.lr import warmup_stable_decay
 from codegeex.tokenizers import (
     Tokenizer,
     WrappedHFTokenizer,
     WrappedTokenGeeXTokenizer,
-    load_custom_tiktoken_tokenizer,
 )
 
 
@@ -71,8 +71,9 @@ class BaseConfig(Config):
     ) -> torch.optim.lr_scheduler.LRScheduler:
         return LambdaLR(
             optimizer,
-            lr_lambda=warmup_cosine_decay(
+            lr_lambda=warmup_stable_decay(
                 W=self.steps * 0.1,
+                S=self.steps * 0.9,
                 D=self.steps,
                 min_lr_scale_factor=0.1,
             ),
@@ -146,7 +147,27 @@ class BaseConfig(Config):
         )
 
 
-class Nano800M(BaseConfig):
+class GPTForCausalLM(GPTLMHeadModel):
+    def __init__(self, config):
+        super().__init__(config)
+
+    def forward(
+        self,
+        inputs: torch.Tensor,
+        targets: torch.Tensor,
+    ):
+        logits = super().forward(inputs).logits
+        batch_size, sequence_length, vocab_size = logits.size()
+
+        targets = targets.view(-1)
+        logits = logits.view(batch_size * sequence_length, vocab_size)
+
+        loss = torch.nn.functional.cross_entropy(logits, targets, reduction="mean")
+
+        return loss
+
+
+class Llama470M(BaseConfig):
     def __init__(
         self,
         postfix: str,
@@ -157,8 +178,8 @@ class Nano800M(BaseConfig):
         mpt: bool = False,
     ):
         super().__init__(
-            name=f"nano-800m-{postfix}",
-            steps=10000,
+            name=f"llama-470m-{postfix}",
+            steps=15000,
             sequence_length=2048,
             micro_batch_size=micro_batch_size,
             gradient_accumulation_steps=gradient_accumulation_steps,
@@ -168,25 +189,37 @@ class Nano800M(BaseConfig):
         self.mpt = mpt
 
     def model(self) -> torch.nn.Module:
-        model = CodeGeeXNanoForCausalLM(
-            CodeGeeXNanoConfig(
-                hidden_size=1536,
-                intermediate_size=4096,
-                max_position_embeddings=self.sequence_length,
-                num_attention_heads=16,
-                norm_eps=1e-6,
-                num_layers=24,
-                vocab_size=self.padded_vocab_size,
-                rope_percentage=0.25,
-                rope_scaling_ratio=1,
-                rope_theta=100000,
-            ),
+        model = GPTForCausalLM(
+            llama_config_to_gpt2_config(
+                LlamaConfig(
+                    vocab_size=self.padded_vocab_size,
+                    hidden_size=1024,
+                    intermediate_size=4096,
+                    num_hidden_layers=24,
+                    num_attention_heads=16,
+                    num_key_value_heads=None,
+                    hidden_act="silu",
+                    max_position_embeddings=self.sequence_length,
+                    initializer_range=0.02,
+                    rms_norm_eps=0.000001,
+                    use_cache=False,
+                    pad_token_id=None,
+                    bos_token_id=self.tokenizer.special_token_to_id("<|eos|>"),  # type: ignore
+                    eos_token_id=self.tokenizer.special_token_to_id("<|eos|>"),  # type: ignore
+                    pretraining_tp=1,
+                    tie_word_embeddings=False,
+                    rope_theta=10000,
+                    rope_scaling=None,
+                    attention_bias=False,
+                    attention_dropout=0,
+                    mlp_bias=False,
+                )
+            )
         )
-        model.init_weights()
         return model
 
 
-class Nano800M32K(Nano800M):
+class Llama470M32K(Llama470M):
     def __init__(
         self,
         postfix: str,
@@ -195,15 +228,15 @@ class Nano800M32K(Nano800M):
     ):
         super().__init__(
             postfix=f"32k-{postfix}",
-            gradient_accumulation_steps=192,
-            micro_batch_size=10,
+            gradient_accumulation_steps=80,
+            micro_batch_size=8,
             padded_vocab_size=2**15,
             tokenizer=tokenizer,
             mpt=mpt,
         )
 
 
-class Nano800M32KTokenGeeXExact(Nano800M32K):
+class Llama470M32KTokenGeeXExact(Llama470M32K):
     def __init__(self):
         tokenizer = TokenGeeXTokenizer.from_file(
             "resources/tokengeex/exact-32k-merged.json"
@@ -214,73 +247,10 @@ class Nano800M32KTokenGeeXExact(Nano800M32K):
         super().__init__("tokengeex-exact", tokenizer)
 
 
-class Nano800M32KTokenGeeXExactWSD(Nano800M32K):
-    def __init__(self):
-        tokenizer = TokenGeeXTokenizer.from_file(
-            "resources/tokengeex/exact-32k-merged.json"
-        )
-        tokenizer = WrappedTokenGeeXTokenizer(
-            tokenizer=tokenizer,
-        )
-        super().__init__("tokengeex-exact-wsd", tokenizer)
-
-    def lr_scheduler(self, optimizer: Optimizer) -> LRScheduler:
-        return LambdaLR(
-            optimizer,
-            warmup_stable_decay(
-                W=self.steps * 0.1,
-                S=self.steps * 0.9,
-                D=self.steps,
-                min_lr_scale_factor=0.1,
-            ),
-        )
-
-
-class Nano800M32KTokenGeeXGeneral(Nano800M32K):
-    def __init__(self):
-        tokenizer = TokenGeeXTokenizer.from_file(
-            "resources/tokengeex/general-32k-merged.json"
-        )
-        tokenizer = WrappedTokenGeeXTokenizer(
-            tokenizer=tokenizer,
-        )
-        super().__init__("tokengeex-general", tokenizer)
-
-
-class Nano800M32KTikTokenGPT4(Nano800M32K):
-    def __init__(self):
-        tokenizer = load_custom_tiktoken_tokenizer(
-            "resources/tiktoken/gpt4-32k.tiktoken",
-            "gpt-4",
-            [],
-        )
-        super().__init__("tiktoken-gpt4", tokenizer)
-
-
-class Nano800M32KHFDeepSeekCoder(Nano800M32K):
+class Llama470M32KHFDeepSeekCoder(Llama470M32K):
     def __init__(self):
         tokenizer = HFTokenizer.from_file("resources/hf/deepseek-coder-32k.json")
         tokenizer = WrappedHFTokenizer(
             tokenizer=tokenizer,
         )
         super().__init__("hf-deepseek", tokenizer)
-
-
-class Nano800M32KHFDeepSeekCoderWSD(Nano800M32K):
-    def __init__(self):
-        tokenizer = HFTokenizer.from_file("resources/hf/deepseek-coder-32k.json")
-        tokenizer = WrappedHFTokenizer(
-            tokenizer=tokenizer,
-        )
-        super().__init__("hf-deepseek-wsd", tokenizer)
-
-    def lr_scheduler(self, optimizer: Optimizer) -> LRScheduler:
-        return LambdaLR(
-            optimizer,
-            warmup_stable_decay(
-                W=self.steps * 0.1,
-                S=self.steps * 0.9,
-                D=self.steps,
-                min_lr_scale_factor=0.1,
-            ),
-        )

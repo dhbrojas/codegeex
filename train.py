@@ -5,7 +5,6 @@ import os
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from codegeex.config import Config
 from codegeex.metrics import DistMetric, MetricsReporter
@@ -70,18 +69,26 @@ def run(
         # Epoch
         dataloader = config.dataloader(device)
         for i, (args, kwargs) in enumerate(dataloader):
-            # Forward
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                loss = model(*args, **kwargs)
-                if isinstance(loss, CausalLMOutputWithPast):
-                    loss = loss.loss
+            step.tick()
 
-            # Backward
-            loss.backward()
+            # Forward
+            if step.is_accumulating():
+                with model.no_sync():
+                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                        loss = model(*args, **kwargs)
+                    loss.backward()
+            else:
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    loss = model(*args, **kwargs)
+                loss.backward()
+
             losses.add(loss.item())
 
             # Step
-            if step.tick():
+            if not step.is_accumulating():
+                gradnorm = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), 1.0
+                ).item()
                 optimizer.step()
                 optimizer.zero_grad()
                 scheduler.step()
@@ -91,7 +98,7 @@ def run(
                 lr = scheduler.get_last_lr()[0]
 
                 print_rank_0(
-                    f"[STEP] epoch={epoch} step={step.index} loss={step_loss:.2f} lr={lr:.5f} duration={step.duration:.2f}s tokens={total_tokens_processed(step.index, config):,} tokens_per_sec={step_tokens_per_second(step.duration, config):,.0f}"
+                    f"[STEP] epoch={epoch} step={step.index} loss={step_loss:.2f} lr={lr:.5f} gradnorm={gradnorm:.2f} duration={step.duration:.2f}s tokens={total_tokens_processed(step.index, config):,} tokens_per_sec={step_tokens_per_second(step.duration, config):,.0f}"
                 )
 
                 for i, batch_loss in enumerate(batch_losses):
@@ -103,6 +110,7 @@ def run(
                 metrics.record("step/loss", step_loss, step.index)
                 metrics.record("step/lr", lr, step.index)
                 metrics.record("step/duration", step.duration, step.index)
+                metrics.record("step/gradnorm", gradnorm, step.index)
                 metrics.record(
                     "step/tokens_per_sec",
                     step_tokens_per_second(step.duration, config),

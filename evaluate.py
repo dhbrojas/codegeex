@@ -36,8 +36,8 @@ def run(
     batch_size: int,
     config: Config,
 ):
-    device = torch.device("cuda:0")
-    model = config.model().cuda(device).eval()
+    device = torch.device("cpu")
+    model = config.model().to(device).eval()  # type: ignore
     metrics = MetricsReporter(checkpoint_dir)
     console = Console()
 
@@ -70,7 +70,7 @@ def run(
             len(missing) + len(expected) == 0
         ), f"{len(missing)} missing, {len(expected)} unexpected"
 
-        tokenizer = config.tokenizer()
+        tokenizer = config.tokenizer
         eos_token = int(tokenizer.special_token_to_id("<|eos|>"))  # type: ignore
         lang_token = tokenizer.special_token_to_id("<|lang|>")
         prefix_token = tokenizer.special_token_to_id("<|prefix|>")
@@ -94,7 +94,6 @@ def run(
                 num_problems = len(problems)
                 num_problems_solved = 0
 
-                # Windows of `batch_size` over `problems`
                 for i in range(0, num_problems, batch_size):
                     # The last batch might be smaller than `batch_size`
                     batch_end = min(num_problems, i + batch_size)
